@@ -1,0 +1,13 @@
+config/config.json
+certificates/
+*.pfx
+*.p12
+*.key
+logs/
+state/
+*.log
+*.clixml
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

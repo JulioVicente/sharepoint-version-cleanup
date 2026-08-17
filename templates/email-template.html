@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><title>SharePoint Version Cleanup</title></head>
+<body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Arial,sans-serif;color:#263238">
+  <div style="max-width:680px;margin:24px auto;background:#fff;border-radius:8px;overflow:hidden">
+    <div style="padding:22px 28px;background:{{COLOR}};color:#fff">
+      <h1 style="margin:0;font-size:22px">SharePoint Version Cleanup — {{STATUS}}</h1>
+    </div>
+    <div style="padding:26px 28px">
+      <p><strong>Site:</strong> {{SITE}}<br><strong>Modo:</strong> {{MODE}}<br><strong>Finalizado:</strong> {{FINISHED}}</p>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Arquivos processados</td><td style="text-align:right">{{FILES}}</td></tr>
+        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Versões removidas</td><td style="text-align:right">{{DELETED}}</td></tr>
+        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Espaço estimado</td><td style="text-align:right">{{FREED}}</td></tr>
+        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Arquivos ignorados</td><td style="text-align:right">{{SKIPPED}}</td></tr>
+      </table>
+      <h2 style="font-size:16px">Avisos</h2><pre style="white-space:pre-wrap">{{WARNINGS}}</pre>
+      <h2 style="font-size:16px">Erro</h2><pre style="white-space:pre-wrap;color:#c62828">{{ERROR}}</pre>
+    </div>
+  </div>
+</body>
+</html>
