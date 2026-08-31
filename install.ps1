@@ -5,12 +5,16 @@ One-liner installer para SharePoint Version Cleanup
 Uso: iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/install.ps1 | iex
 
 .DESCRIPTION
-Script de instalação único que:
-1. Valida todos os pré-requisitos
-2. Auto-instala PowerShell 7.4+ se necessário
+Script de instalacao unico que:
+1. Valida todos os pre-requisitos
+2. Auto-instala PowerShell 7.4+ se necessario
 3. Auto-instala PnP.PowerShell
-4. Executa a instalação completa
+4. Executa a instalacao completa
 #>
+
+# Forca encoding UTF-8 para caracteres especiais
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$PSDefaultParameterValues['Out-File:Encoding'] = 'utf8'
 
 # Desabilita erros que fecham o script
 $ErrorActionPreference = 'Continue'
@@ -18,7 +22,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 # Log em arquivo para debug
 $logPath = "$env:TEMP\spvc-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
-Start-Transcript -Path $logPath -Append -Force | Out-Null
+Start-Transcript -Path $logPath -Append -Force -Encoding UTF8 | Out-Null
 
 # Cores
 $colors = @{
@@ -41,42 +45,42 @@ Write-Host "
 " -ForegroundColor $colors.Header
 
 # ============================================================================
-# FASE 1: VALIDAÇÕES PRÉ-REQUISITOS
+# FASE 1: VALIDACOES PRE-REQUISITOS
 # ============================================================================
-Write-Host "`n📋 FASE 1: Validando Ambiente..." -ForegroundColor $colors.Header
+Write-Host "`n[FASE 1] Validando Ambiente..." -ForegroundColor $colors.Header
 
 # 1. Windows
 Write-Host "  [1/3] Verificando Windows..." -ForegroundColor $colors.Info -NoNewline
 if ($env:OS -eq 'Windows_NT') {
     $osVersion = [System.Environment]::OSVersion
-    Write-Host " ✅" -ForegroundColor $colors.Success
-    Write-Host "        Versão: $osVersion" -ForegroundColor $colors.Info
+    Write-Host " OK" -ForegroundColor $colors.Success
+    Write-Host "        Versao: $osVersion" -ForegroundColor $colors.Info
 } else {
-    Write-Host " ❌ ERRO: Este script requer Windows" -ForegroundColor $colors.Error
+    Write-Host " ERRO: Este script requer Windows" -ForegroundColor $colors.Error
     Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
     Read-Host
     exit 1
 }
 
 # 2. Admin
-Write-Host "  [2/3] Verificando privilégios de Administrador..." -ForegroundColor $colors.Info -NoNewline
+Write-Host "  [2/3] Verificando privilegios de Administrador..." -ForegroundColor $colors.Info -NoNewline
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = New-Object Security.Principal.WindowsPrincipal($identity)
     $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     
     if ($isAdmin) {
-        Write-Host " ✅" -ForegroundColor $colors.Success
-        Write-Host "        Usuário: $($identity.Name)" -ForegroundColor $colors.Info
+        Write-Host " OK" -ForegroundColor $colors.Success
+        Write-Host "        Usuario: $($identity.Name)" -ForegroundColor $colors.Info
     } else {
-        Write-Host " ❌ ERRO: Execute como Administrador" -ForegroundColor $colors.Error
-        Write-Host "        Usuário atual: $($identity.Name)" -ForegroundColor $colors.Error
+        Write-Host " ERRO: Execute como Administrador" -ForegroundColor $colors.Error
+        Write-Host "        Usuario atual: $($identity.Name)" -ForegroundColor $colors.Error
         Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
         Read-Host
         exit 1
     }
 } catch {
-    Write-Host " ❌ ERRO ao verificar: $($_.Exception.Message)" -ForegroundColor $colors.Error
+    Write-Host " ERRO ao verificar: $($_.Exception.Message)" -ForegroundColor $colors.Error
     Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
     Read-Host
     exit 1
@@ -86,80 +90,82 @@ try {
 Write-Host "  [3/3] Verificando conectividade com Microsoft 365..." -ForegroundColor $colors.Info -NoNewline
 try {
     $response = Invoke-WebRequest -Uri 'https://graph.microsoft.com' -Method Head -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
-    Write-Host " ✅" -ForegroundColor $colors.Success
-    Write-Host "        Microsoft Graph: Acessível" -ForegroundColor $colors.Info
+    Write-Host " OK" -ForegroundColor $colors.Success
+    Write-Host "        Microsoft Graph: Acessivel" -ForegroundColor $colors.Info
 } catch {
-    Write-Host " ⚠️  (continuando...)" -ForegroundColor $colors.Warning
+    Write-Host " AVISO (continuando...)" -ForegroundColor $colors.Warning
     Write-Host "        Erro: Sem acesso direto ao Microsoft Graph" -ForegroundColor $colors.Warning
 }
 
 # ============================================================================
-# FASE 2: VERIFICAÇÃO POWERSHELL
+# FASE 2: VERIFICACAO POWERSHELL
 # ============================================================================
-Write-Host "`n📦 FASE 2: Verificando PowerShell..." -ForegroundColor $colors.Header
+Write-Host "`n[FASE 2] Verificando PowerShell..." -ForegroundColor $colors.Header
 
-$psVersion = $PSVersionTable.PSVersion
-$psEdition = $PSVersionTable.PSEdition
-$psPath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
+# Obtem as informacoes SEM tentar atribuir PSEdition (que eh read-only)
+$versionObj = $PSVersionTable
+$psVersao = $versionObj.PSVersion
+$psEdicao = $versionObj.PSEdition
+$psExePath = (Get-Command pwsh -ErrorAction SilentlyContinue).Source
 
 Write-Host "  PowerShell detectado:" -ForegroundColor $colors.Info
-Write-Host "    • Versão: $psVersion" -ForegroundColor $colors.Info
-Write-Host "    • Edição: $psEdition" -ForegroundColor $colors.Info
-Write-Host "    • Caminho: $psPath" -ForegroundColor $colors.Info
+Write-Host "    - Versao: $psVersao" -ForegroundColor $colors.Info
+Write-Host "    - Edicao: $psEdicao" -ForegroundColor $colors.Info
+Write-Host "    - Caminho: $psExePath" -ForegroundColor $colors.Info
 
-if ($psVersion -lt [version]'7.4.0') {
-    Write-Host "  ⚠️  Versão antiga (requerido: 7.4+)" -ForegroundColor $colors.Warning
-    Write-Host "  Você precisará atualizar manualmente:" -ForegroundColor $colors.Warning
+if ($psVersao -lt [version]'7.4.0') {
+    Write-Host "  AVISO: Versao antiga (requerido: 7.4+)" -ForegroundColor $colors.Warning
+    Write-Host "  Voce precisara atualizar manualmente:" -ForegroundColor $colors.Warning
     Write-Host "    1. Visite: https://github.com/PowerShell/PowerShell/releases" -ForegroundColor $colors.Info
     Write-Host "    2. Baixe: PowerShell-7.x.x-win-x64.msi" -ForegroundColor $colors.Info
     Write-Host "    3. Instale e reinicie" -ForegroundColor $colors.Info
     Write-Host "`nPressione ENTER para continuar..." -ForegroundColor $colors.Warning
     Read-Host
 } else {
-    Write-Host "  ✅ PowerShell $psVersion OK (atende aos requisitos)" -ForegroundColor $colors.Success
+    Write-Host "  OK PowerShell $psVersao (atende aos requisitos)" -ForegroundColor $colors.Success
 }
 
 # ============================================================================
-# FASE 3: VERIFICAÇÃO PNP.POWERSHELL
+# FASE 3: VERIFICACAO PNP.POWERSHELL
 # ============================================================================
-Write-Host "`n📦 FASE 3: Verificando PnP.PowerShell..." -ForegroundColor $colors.Header
+Write-Host "`n[FASE 3] Verificando PnP.PowerShell..." -ForegroundColor $colors.Header
 
 try {
-    $pnpModule = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+    $pnpMod = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
     
-    if (-not $pnpModule) {
-        Write-Host "  ℹ️  PnP.PowerShell não encontrado" -ForegroundColor $colors.Info
-        Write-Host "    Instalando versão mais recente..." -ForegroundColor $colors.Info
+    if (-not $pnpMod) {
+        Write-Host "  INFO: PnP.PowerShell nao encontrado" -ForegroundColor $colors.Info
+        Write-Host "  Instalando versao mais recente..." -ForegroundColor $colors.Info
         Install-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
         
-        # Verifica versão instalada
-        $newPnp = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
-        Write-Host "  ✅ PnP.PowerShell $($newPnp.Version) instalado com sucesso!" -ForegroundColor $colors.Success
+        # Verifica versao instalada
+        $pnpMod = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+        Write-Host "  OK PnP.PowerShell $($pnpMod.Version) instalado com sucesso!" -ForegroundColor $colors.Success
     } else {
-        Write-Host "  ℹ️  PnP.PowerShell detectado:" -ForegroundColor $colors.Info
-        Write-Host "    • Versão: $($pnpModule.Version)" -ForegroundColor $colors.Info
-        Write-Host "    • Caminho: $($pnpModule.ModuleBase)" -ForegroundColor $colors.Info
+        Write-Host "  INFO: PnP.PowerShell detectado:" -ForegroundColor $colors.Info
+        Write-Host "    - Versao: $($pnpMod.Version)" -ForegroundColor $colors.Info
+        Write-Host "    - Caminho: $($pnpMod.ModuleBase)" -ForegroundColor $colors.Info
         
-        if ($pnpModule.Version -lt [version]'3.0.0') {
-            Write-Host "  ⚠️  Versão $($pnpModule.Version) é antiga (recomendado: 3.0+)" -ForegroundColor $colors.Warning
+        if ($pnpMod.Version -lt [version]'3.0.0') {
+            Write-Host "  AVISO: Versao $($pnpMod.Version) eh antiga (recomendado: 3.0+)" -ForegroundColor $colors.Warning
             Write-Host "  Tentando atualizar..." -ForegroundColor $colors.Info
             Update-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -ErrorAction Continue
             
-            $updatedPnp = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
-            Write-Host "  ✅ PnP.PowerShell atualizado para $($updatedPnp.Version)!" -ForegroundColor $colors.Success
+            $pnpMod = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+            Write-Host "  OK PnP.PowerShell atualizado para $($pnpMod.Version)!" -ForegroundColor $colors.Success
         } else {
-            Write-Host "  ✅ PnP.PowerShell $($pnpModule.Version) OK (atende aos requisitos)" -ForegroundColor $colors.Success
+            Write-Host "  OK PnP.PowerShell $($pnpMod.Version) (atende aos requisitos)" -ForegroundColor $colors.Success
         }
     }
 } catch {
-    Write-Host "  ⚠️  Erro ao verificar PnP.PowerShell: $($_.Exception.Message)" -ForegroundColor $colors.Warning
+    Write-Host "  AVISO: Erro ao verificar PnP.PowerShell: $($_.Exception.Message)" -ForegroundColor $colors.Warning
     Write-Host "  Continuando mesmo assim..." -ForegroundColor $colors.Info
 }
 
 # ============================================================================
 # FASE 4: DOWNLOAD E MENU
 # ============================================================================
-Write-Host "`n🚀 FASE 4: Iniciando Instalação..." -ForegroundColor $colors.Header
+Write-Host "`n[FASE 4] Iniciando Instalacao..." -ForegroundColor $colors.Header
 
 $repoUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main'
 $tempDir = "$env:TEMP\spvc-install-$([guid]::NewGuid().ToString('N'))"
@@ -167,9 +173,9 @@ $tempDir = "$env:TEMP\spvc-install-$([guid]::NewGuid().ToString('N'))"
 try {
     New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction Stop | Out-Null
     
-    Write-Host "  Criando diretório temporário..." -ForegroundColor $colors.Info
+    Write-Host "  Criando diretorio temporario..." -ForegroundColor $colors.Info
     Write-Host "    Caminho: $tempDir" -ForegroundColor $colors.Info
-    Write-Host "  Baixando scripts do repositório..." -ForegroundColor $colors.Info
+    Write-Host "  Baixando scripts do repositorio..." -ForegroundColor $colors.Info
     Write-Host "    URL: $repoUrl" -ForegroundColor $colors.Info
     
     # Download
@@ -177,23 +183,23 @@ try {
     $validateScript = Join-Path $tempDir 'Validate-Prerequisites.ps1'
     
     Invoke-WebRequest -Uri "$repoUrl/Install.ps1" -OutFile $installScript -UseBasicParsing -ErrorAction Stop
-    Write-Host "    ✅ Install.ps1 baixado" -ForegroundColor $colors.Success
+    Write-Host "    OK Install.ps1 baixado" -ForegroundColor $colors.Success
     
     Invoke-WebRequest -Uri "$repoUrl/scripts/Validate-Prerequisites.ps1" -OutFile $validateScript -UseBasicParsing -ErrorAction Stop
-    Write-Host "    ✅ Validate-Prerequisites.ps1 baixado" -ForegroundColor $colors.Success
+    Write-Host "    OK Validate-Prerequisites.ps1 baixado" -ForegroundColor $colors.Success
     
     # Menu
     Write-Host "`n" -ForegroundColor $colors.Header
     Write-Host "╔══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $colors.Header
-    Write-Host "║                       OPÇÕES DE INSTALAÇÃO                                  ║" -ForegroundColor $colors.Header
+    Write-Host "║                       OPCOES DE INSTALACAO                                  ║" -ForegroundColor $colors.Header
     Write-Host "╚══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $colors.Header
     Write-Host ""
-    Write-Host "  1️⃣  Teste (WhatIf) - Mostra o que seria feito SEM fazer nada" -ForegroundColor $colors.Info
-    Write-Host "  2️⃣  Instalar - Instalação completa" -ForegroundColor $colors.Success
-    Write-Host "  3️⃣  Cancelar" -ForegroundColor $colors.Error
+    Write-Host "  1 - Teste (WhatIf): Mostra o que seria feito SEM fazer nada" -ForegroundColor $colors.Info
+    Write-Host "  2 - Instalar: Instalacao completa" -ForegroundColor $colors.Success
+    Write-Host "  3 - Cancelar" -ForegroundColor $colors.Error
     Write-Host ""
     
-    $choice = Read-Host "  Escolha uma opção [1-3]"
+    $choice = Read-Host "  Escolha uma opcao [1-3]"
     
     switch ($choice) {
         '1' {
@@ -203,21 +209,21 @@ try {
             Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Info
         }
         '2' {
-            Write-Host "`n  Executando instalação..." -ForegroundColor $colors.Success
+            Write-Host "`n  Executando instalacao..." -ForegroundColor $colors.Success
             Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Success
             & $installScript -SkipEmailTest
             Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Success
         }
         '3' {
-            Write-Host "`n  Instalação cancelada" -ForegroundColor $colors.Warning
+            Write-Host "`n  Instalacao cancelada" -ForegroundColor $colors.Warning
         }
         default {
-            Write-Host "  ❌ Opção inválida" -ForegroundColor $colors.Error
+            Write-Host "  ERRO: Opcao invalida" -ForegroundColor $colors.Error
         }
     }
     
 } catch {
-    Write-Host "  ❌ ERRO: $($_.Exception.Message)" -ForegroundColor $colors.Error
+    Write-Host "  ERRO: $($_.Exception.Message)" -ForegroundColor $colors.Error
     Write-Host "  Stack: $($_.ScriptStackTrace)" -ForegroundColor $colors.Error
 } finally {
     # Limpeza
@@ -227,16 +233,16 @@ try {
 }
 
 # ============================================================================
-# FINALIZAÇÃO
+# FINALIZACAO
 # ============================================================================
 Write-Host "`n" -ForegroundColor $colors.Header
-Write-Host "✅ Processo concluído!" -ForegroundColor $colors.Success
-Write-Host "`n📋 Resumo do Ambiente:" -ForegroundColor $colors.Header
-Write-Host "  • Windows: $osVersion" -ForegroundColor $colors.Info
-Write-Host "  • PowerShell: $psVersion ($psEdition)" -ForegroundColor $colors.Info
-Write-Host "  • PnP.PowerShell: $(if ($pnpModule) { $pnpModule.Version } else { 'Não instalado' })" -ForegroundColor $colors.Info
-Write-Host "`n📁 Log completo salvo em:" -ForegroundColor $colors.Header
-Write-Host "    $logPath" -ForegroundColor $colors.Info
+Write-Host "Processo concluido!" -ForegroundColor $colors.Success
+Write-Host "`nResumo do Ambiente:" -ForegroundColor $colors.Header
+Write-Host "  - Windows: $osVersion" -ForegroundColor $colors.Info
+Write-Host "  - PowerShell: $psVersao ($psEdicao)" -ForegroundColor $colors.Info
+Write-Host "  - PnP.PowerShell: $(if ($pnpMod) { $pnpMod.Version } else { 'Nao instalado' })" -ForegroundColor $colors.Info
+Write-Host "`nLog completo salvo em:" -ForegroundColor $colors.Header
+Write-Host "  $logPath" -ForegroundColor $colors.Info
 Write-Host ""
 Write-Host "Pressione ENTER para fechar..." -ForegroundColor $colors.Warning
 Read-Host | Out-Null
