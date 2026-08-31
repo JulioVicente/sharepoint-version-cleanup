@@ -42,6 +42,12 @@ $root = "$env:ProgramData\SharePointVersionCleanup"
 
 Depois de conferir os logs, repita com `-Apply` apenas no piloto. As tarefas instaladas começam em simulação; use `scripts/Enable-Production.ps1` somente após validar o piloto aplicado.
 
+## Troubleshooting da carga remota
+
+- O instalador força recarga sem cache dos componentes remotos (`Cache-Control: no-cache, no-store`, `Pragma: no-cache`, `Expires: 0`).
+- Os logs informam a URL raw e a branch resolvida de cada componente obrigatório baixado durante a instalação.
+- Se um componente remoto falhar, valide se o arquivo esperado existe no repositório e em uma das branches candidatas (`main` ou `master`) antes de repetir a instalação.
+
 ## Segurança e limitações
 
 - Não versione `config.json`, certificados, logs ou checkpoints.
