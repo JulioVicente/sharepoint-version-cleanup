@@ -1,22 +1,236 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="pt-BR">
-<head><meta charset="utf-8"><title>SharePoint Version Cleanup</title></head>
-<body style="margin:0;background:#f4f6f8;font-family:Segoe UI,Arial,sans-serif;color:#263238">
-  <div style="max-width:680px;margin:24px auto;background:#fff;border-radius:8px;overflow:hidden">
-    <div style="padding:22px 28px;background:{{COLOR}};color:#fff">
-      <h1 style="margin:0;font-size:22px">SharePoint Version Cleanup — {{STATUS}}</h1>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SharePoint Version Cleanup - Relatorio</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            background-color: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 30px;
+        }
+        .header {
+            background: linear-gradient(135deg, #0078d4 0%, #0063b1 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+        .header p {
+            margin: 5px 0 0 0;
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .content {
+            margin: 20px 0;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-left: 4px solid #0078d4;
+            border-radius: 4px;
+        }
+        .section-title {
+            font-size: 16px;
+            font-weight: bold;
+            color: #0078d4;
+            margin: 0 0 10px 0;
+        }
+        .status {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+            margin: 5px 0;
+        }
+        .status.success {
+            background-color: #e7f3e7;
+            color: #107c10;
+        }
+        .status.warning {
+            background-color: #fff4ce;
+            color: #ffb900;
+        }
+        .status.error {
+            background-color: #fde7e9;
+            color: #d13438;
+        }
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin: 15px 0;
+        }
+        .stat-box {
+            padding: 15px;
+            background-color: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .stat-number {
+            font-size: 28px;
+            font-weight: bold;
+            color: #0078d4;
+        }
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 15px 0;
+        }
+        th {
+            background-color: #0078d4;
+            color: white;
+            padding: 12px;
+            text-align: left;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        td {
+            padding: 12px;
+            border-bottom: 1px solid #e0e0e0;
+            font-size: 12px;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+        .footer {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+            text-align: center;
+            font-size: 11px;
+            color: #999;
+        }
+        .timestamp {
+            color: #666;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        a {
+            color: #0078d4;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>SharePoint Version Cleanup</h1>
+            <p>Relatorio de Limpeza de Versoes</p>
+        </div>
+
+        <div class="content">
+            <!-- Resumo -->
+            <div class="section">
+                <div class="section-title">Resumo da Execucao</div>
+                <div>
+                    <span class="status success">{{STATUS}}</span>
+                </div>
+                <div class="timestamp">
+                    Data: {{EXECUTION_DATE}}<br>
+                    Duracao: {{EXECUTION_TIME}}
+                </div>
+            </div>
+
+            <!-- Estatisticas -->
+            <div class="section">
+                <div class="section-title">Estatisticas</div>
+                <div class="stats">
+                    <div class="stat-box">
+                        <div class="stat-number">{{VERSIONS_DELETED}}</div>
+                        <div class="stat-label">Versoes Removidas</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-number">{{STORAGE_FREED}}</div>
+                        <div class="stat-label">Espaco Liberado</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Detalhes por Site -->
+            {{#if SITES}}
+            <div class="section">
+                <div class="section-title">Detalhes por Site</div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Site</th>
+                            <th>Versoes Removidas</th>
+                            <th>Espaco Liberado</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {{#each SITES}}
+                        <tr>
+                            <td>{{this.url}}</td>
+                            <td>{{this.versionsDeleted}}</td>
+                            <td>{{this.spaceFreed}}</td>
+                            <td>
+                                {{#if this.success}}
+                                <span class="status success">OK</span>
+                                {{else}}
+                                <span class="status error">ERRO</span>
+                                {{/if}}
+                            </td>
+                        </tr>
+                        {{/each}}
+                    </tbody>
+                </table>
+            </div>
+            {{/if}}
+
+            <!-- Mensagens e Erros -->
+            {{#if ERRORS}}
+            <div class="section">
+                <div class="section-title">Avisos e Erros</div>
+                <div style="color: #d13438; font-size: 12px;">
+                    {{#each ERRORS}}
+                    <p>• {{this}}</p>
+                    {{/each}}
+                </div>
+            </div>
+            {{/if}}
+
+            <!-- Proximas Execucoes -->
+            <div class="section">
+                <div class="section-title">Proximas Execucoes</div>
+                <p style="margin: 0; font-size: 12px; color: #666;">
+                    Este script eh executado automaticamente {{SCHEDULE}} conforme configurado no Agendador do Windows.
+                </p>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p>SharePoint Version Cleanup v1.0 | <a href="https://github.com/JulioVicente/sharepoint-version-cleanup">GitHub</a></p>
+            <p>Este relatorio foi gerado automaticamente. Nao responda este email.</p>
+        </div>
     </div>
-    <div style="padding:26px 28px">
-      <p><strong>Site:</strong> {{SITE}}<br><strong>Modo:</strong> {{MODE}}<br><strong>Finalizado:</strong> {{FINISHED}}</p>
-      <table style="width:100%;border-collapse:collapse">
-        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Arquivos processados</td><td style="text-align:right">{{FILES}}</td></tr>
-        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Versões removidas</td><td style="text-align:right">{{DELETED}}</td></tr>
-        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Espaço estimado</td><td style="text-align:right">{{FREED}}</td></tr>
-        <tr><td style="padding:9px;border-bottom:1px solid #ddd">Arquivos ignorados</td><td style="text-align:right">{{SKIPPED}}</td></tr>
-      </table>
-      <h2 style="font-size:16px">Avisos</h2><pre style="white-space:pre-wrap">{{WARNINGS}}</pre>
-      <h2 style="font-size:16px">Erro</h2><pre style="white-space:pre-wrap;color:#c62828">{{ERROR}}</pre>
-    </div>
-  </div>
 </body>
 </html>

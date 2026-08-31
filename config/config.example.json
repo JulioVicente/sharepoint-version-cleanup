@@ -2,20 +2,26 @@
   "SchemaVersion": 1,
   "Tenant": "contoso.onmicrosoft.com",
   "AdminUrl": "https://contoso-admin.sharepoint.com",
-  "Sites": ["https://contoso.sharepoint.com/sites/Piloto"],
+  "Sites": [
+    "https://contoso.sharepoint.com/sites/projecta",
+    "https://contoso.sharepoint.com/sites/projectb"
+  ],
   "VersionsToKeep": 10,
   "Authentication": {
     "ClientId": "00000000-0000-0000-0000-000000000000",
-    "CertificateThumbprint": "0000000000000000000000000000000000000000"
+    "CertificateThumbprint": "0123456789ABCDEF0123456789ABCDEF01234567"
   },
   "Email": {
-    "Enabled": false,
-    "SmtpServer": "smtp.example.com",
+    "Enabled": true,
+    "SmtpServer": "smtp.office365.com",
     "Port": 587,
     "UseSsl": true,
-    "From": "sharepoint-cleanup@example.com",
-    "To": ["operations@example.com"],
-    "UserName": "sharepoint-cleanup@example.com",
+    "From": "noreply@contoso.com",
+    "To": [
+      "admin@contoso.com",
+      "manager@contoso.com"
+    ],
+    "UserName": "noreply@contoso.com",
     "EncryptedPassword": null
   },
   "Paths": {
