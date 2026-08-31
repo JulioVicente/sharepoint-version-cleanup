@@ -37,8 +37,8 @@ Describe 'Install.ps1 - Copy-ProjectFiles' {
         Copy-ProjectFiles -Destination $destination
 
         Test-Path (Join-Path $destination 'scripts\component.ps1') | Should -Be $true
-        Assert-MockCalled Invoke-WebRequest 1 -Scope It
-        Assert-MockCalled Start-Sleep 0 -Scope It
+        Should -Invoke -CommandName Invoke-WebRequest -Exactly -Times 1 -Scope It
+        Should -Invoke -CommandName Start-Sleep -Exactly -Times 0 -Scope It
     }
 
     It 'repete com backoff exponencial e falha quando o status HTTP nao e 200' {
@@ -64,9 +64,10 @@ Describe 'Install.ps1 - Copy-ProjectFiles' {
         $errorMessage | Should -Match 'Test-NetConnection raw\.githubusercontent\.com -Port 443'
         $errorMessage | Should -Match 'clone local do repositorio'
 
-        Assert-MockCalled Invoke-WebRequest 3 -Scope It
-        Assert-MockCalled Start-Sleep 1 -Scope It -ParameterFilter { $Seconds -eq 2 }
-        Assert-MockCalled Start-Sleep 1 -Scope It -ParameterFilter { $Seconds -eq 4 }
+        Should -Invoke -CommandName Invoke-WebRequest -Exactly -Times 3 -Scope It
+        Should -Invoke -CommandName Start-Sleep -Exactly -Times 2 -Scope It
+        Should -Invoke -CommandName Start-Sleep -Exactly -Times 1 -Scope It -ParameterFilter { $Seconds -eq 2 }
+        Should -Invoke -CommandName Start-Sleep -Exactly -Times 1 -Scope It -ParameterFilter { $Seconds -eq 4 }
         Test-Path (Join-Path $destination 'scripts\component.ps1') | Should -Be $false
     }
 }

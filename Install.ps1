@@ -108,6 +108,7 @@ function Copy-ProjectFiles {
         $uri = "$($RepositoryRawUrl.TrimEnd('/'))/$relativePath"
         $maxRetries = 3
         $retryCount = 0
+        $retriesPerformed = 0
         $backoffSeconds = 2
         $downloaded = $false
         $lastErrorMessage = $null
@@ -133,12 +134,12 @@ function Copy-ProjectFiles {
                 $lastErrorMessage = $_.Exception.Message
                 Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
                 if ($retryCount -lt $maxRetries) {
+                    $retriesPerformed++
                     Write-Host "    AVISO: Falha na tentativa $retryCount de ${maxRetries}: $lastErrorMessage" -ForegroundColor Yellow
                     Write-Host "    Nova tentativa em $backoffSeconds segundos..." -ForegroundColor Yellow
                     Start-Sleep -Seconds $backoffSeconds
                     $backoffSeconds = [Math]::Min($backoffSeconds * 2, 30)
                 } else {
-                    $retriesPerformed = [Math]::Max($retryCount - 1, 0)
                     throw @"
 Componente obrigatorio indisponivel: $uri
 Tentativas totais: $retryCount de $maxRetries
