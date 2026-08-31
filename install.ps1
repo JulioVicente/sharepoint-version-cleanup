@@ -12,9 +12,13 @@ Script de instalação único que:
 4. Executa a instalação completa
 #>
 
-Set-StrictMode -Version Latest
+# Desabilita erros que fecham o script
 $ErrorActionPreference = 'Continue'
 $ProgressPreference = 'SilentlyContinue'
+
+# Log em arquivo para debug
+$logPath = "$env:TEMP\spvc-install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+Start-Transcript -Path $logPath -Append -Force | Out-Null
 
 # Cores
 $colors = @{
@@ -25,55 +29,52 @@ $colors = @{
     Info = 'Blue'
 }
 
-# Flag para saber se foi executado via iex
-$executedViaIex = $PSCommandPath -eq $null
-
 Write-Host "
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                  SharePoint Version Cleanup - Instalador                     ║
 ║                                                                              ║
 ║  OneLinr: iwr -useb https://raw.githubusercontent.com/JulioVicente/          ║
 ║           sharepoint-version-cleanup/main/install.ps1 | iex                  ║
+║                                                                              ║
+║  Log: $logPath                                                               ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 " -ForegroundColor $colors.Header
-
-# ============================================================================
-# FUNÇÃO: Pausa antes de sair
-# ============================================================================
-function Wait-KeyPress {
-    param([string]$Message = "Pressione qualquer tecla para continuar...")
-    Write-Host "`n$Message" -ForegroundColor $colors.Warning
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-}
 
 # ============================================================================
 # FASE 1: VALIDAÇÕES PRÉ-REQUISITOS
 # ============================================================================
 Write-Host "`n📋 FASE 1: Validando Ambiente..." -ForegroundColor $colors.Header
 
-$validations = @{}
-
 # 1. Windows
 Write-Host "  [1/3] Verificando Windows..." -ForegroundColor $colors.Info -NoNewline
 if ($env:OS -eq 'Windows_NT') {
     Write-Host " ✅" -ForegroundColor $colors.Success
-    $validations['Windows'] = $true
 } else {
     Write-Host " ❌ ERRO: Este script requer Windows" -ForegroundColor $colors.Error
-    Wait-KeyPress "Pressione qualquer tecla para sair..."
+    Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
+    Read-Host
     exit 1
 }
 
 # 2. Admin
 Write-Host "  [2/3] Verificando privilégios de Administrador..." -ForegroundColor $colors.Info -NoNewline
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$principal = New-Object Security.Principal.WindowsPrincipal($identity)
-if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host " ✅" -ForegroundColor $colors.Success
-    $validations['Admin'] = $true
-} else {
-    Write-Host " ❌ ERRO: Execute como Administrador" -ForegroundColor $colors.Error
-    Wait-KeyPress "Pressione qualquer tecla para sair..."
+try {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    
+    if ($isAdmin) {
+        Write-Host " ✅" -ForegroundColor $colors.Success
+    } else {
+        Write-Host " ❌ ERRO: Execute como Administrador" -ForegroundColor $colors.Error
+        Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
+        Read-Host
+        exit 1
+    }
+} catch {
+    Write-Host " ❌ ERRO ao verificar: $($_.Exception.Message)" -ForegroundColor $colors.Error
+    Write-Host "`nPressione ENTER para sair..." -ForegroundColor $colors.Warning
+    Read-Host
     exit 1
 }
 
@@ -82,157 +83,131 @@ Write-Host "  [3/3] Verificando conectividade com Microsoft 365..." -ForegroundC
 try {
     $response = Invoke-WebRequest -Uri 'https://graph.microsoft.com' -Method Head -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
     Write-Host " ✅" -ForegroundColor $colors.Success
-    $validations['M365'] = $true
 } catch {
-    Write-Host " ⚠️  (Verificação falhou, mas continuando...)" -ForegroundColor $colors.Warning
-    $validations['M365'] = $true
+    Write-Host " ⚠️  (continuando...)" -ForegroundColor $colors.Warning
 }
 
 # ============================================================================
-# FASE 2: ATUALIZAÇÃO POWERSHELL
+# FASE 2: VERIFICAÇÃO POWERSHELL
 # ============================================================================
 Write-Host "`n📦 FASE 2: Verificando PowerShell..." -ForegroundColor $colors.Header
 
 $psVersion = $PSVersionTable.PSVersion
+Write-Host "  PowerShell atual: $psVersion" -ForegroundColor $colors.Info
+
 if ($psVersion -lt [version]'7.4.0') {
-    Write-Host "  ⚠️  PowerShell $psVersion detectado (requerido: 7.4+)" -ForegroundColor $colors.Warning
-    Write-Host "  Iniciando atualização automática..." -ForegroundColor $colors.Info
-    
-    $wingetExists = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
-    
-    if ($wingetExists) {
-        Write-Host "  Instalando PowerShell 7 via WinGet..." -ForegroundColor $colors.Info
-        try {
-            & winget install --id Microsoft.PowerShell --source winget --accept-source-agreements --accept-package-agreements -h 2>$null
-            Write-Host "  ✅ PowerShell 7 instalado!" -ForegroundColor $colors.Success
-            Write-Host "  ℹ️  Reinicie PowerShell e execute este comando novamente:`n" -ForegroundColor $colors.Warning
-            Write-Host "     iwr -useb 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/install.ps1' | iex" -ForegroundColor $colors.Info
-            Wait-KeyPress "Pressione qualquer tecla para sair..."
-            exit 0
-        } catch {
-            Write-Host "  ⚠️  Instalação via WinGet falhou, continuando..." -ForegroundColor $colors.Warning
-        }
-    } else {
-        Write-Host "  ⚠️  WinGet não disponível. Download manual em:" -ForegroundColor $colors.Warning
-        Write-Host "     https://github.com/PowerShell/PowerShell/releases" -ForegroundColor $colors.Info
-    }
+    Write-Host "  ⚠️  Versão antiga (requerido: 7.4+)" -ForegroundColor $colors.Warning
+    Write-Host "  Você precisará atualizar manualmente:" -ForegroundColor $colors.Warning
+    Write-Host "    1. Visite: https://github.com/PowerShell/PowerShell/releases" -ForegroundColor $colors.Info
+    Write-Host "    2. Baixe: PowerShell-7.x.x-win-x64.msi" -ForegroundColor $colors.Info
+    Write-Host "    3. Instale e reinicie" -ForegroundColor $colors.Info
+    Write-Host "`nPressione ENTER para continuar..." -ForegroundColor $colors.Warning
+    Read-Host
 } else {
     Write-Host "  ✅ PowerShell $psVersion OK" -ForegroundColor $colors.Success
 }
 
 # ============================================================================
-# FASE 3: INSTALAÇÃO AUTOMÁTICA DO PNP.POWERSHELL
+# FASE 3: VERIFICAÇÃO PNP.POWERSHELL
 # ============================================================================
 Write-Host "`n📦 FASE 3: Verificando PnP.PowerShell..." -ForegroundColor $colors.Header
 
-$pnpModule = Get-Module -ListAvailable PnP.PowerShell | Sort-Object Version -Descending | Select-Object -First 1
-
-if (-not $pnpModule) {
-    Write-Host "  ℹ️  PnP.PowerShell não encontrado, instalando..." -ForegroundColor $colors.Info
-    try {
+try {
+    $pnpModule = Get-Module -ListAvailable PnP.PowerShell -ErrorAction SilentlyContinue | Sort-Object Version -Descending | Select-Object -First 1
+    
+    if (-not $pnpModule) {
+        Write-Host "  ℹ️  PnP.PowerShell não encontrado, instalando..." -ForegroundColor $colors.Info
         Install-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -AllowClobber -ErrorAction Stop
         Write-Host "  ✅ PnP.PowerShell instalado com sucesso!" -ForegroundColor $colors.Success
-    } catch {
-        Write-Host "  ❌ ERRO ao instalar PnP.PowerShell: $($_.Exception.Message)" -ForegroundColor $colors.Error
-        Wait-KeyPress "Pressione qualquer tecla para sair..."
-        exit 1
-    }
-} elseif ($pnpModule.Version -lt [version]'3.0.0') {
-    Write-Host "  ⚠️  PnP.PowerShell $($pnpModule.Version) é antiga (recomendado: 3.0+)" -ForegroundColor $colors.Warning
-    Write-Host "  Atualizando..." -ForegroundColor $colors.Info
-    try {
-        Update-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -ErrorAction Stop
+    } elseif ($pnpModule.Version -lt [version]'3.0.0') {
+        Write-Host "  ⚠️  PnP.PowerShell $($pnpModule.Version) é antiga (recomendado: 3.0+)" -ForegroundColor $colors.Warning
+        Write-Host "  Tentando atualizar..." -ForegroundColor $colors.Info
+        Update-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -ErrorAction Continue
         Write-Host "  ✅ PnP.PowerShell atualizado!" -ForegroundColor $colors.Success
-    } catch {
-        Write-Host "  ⚠️  Versão existente será usada" -ForegroundColor $colors.Warning
+    } else {
+        Write-Host "  ✅ PnP.PowerShell $($pnpModule.Version) OK" -ForegroundColor $colors.Success
     }
-} else {
-    Write-Host "  ✅ PnP.PowerShell $($pnpModule.Version) OK" -ForegroundColor $colors.Success
+} catch {
+    Write-Host "  ⚠️  Erro ao verificar PnP.PowerShell: $($_.Exception.Message)" -ForegroundColor $colors.Warning
+    Write-Host "  Continuando mesmo assim..." -ForegroundColor $colors.Info
 }
 
 # ============================================================================
-# FASE 4: DOWNLOAD E EXECUÇÃO DA INSTALAÇÃO COMPLETA
+# FASE 4: DOWNLOAD E MENU
 # ============================================================================
 Write-Host "`n🚀 FASE 4: Iniciando Instalação..." -ForegroundColor $colors.Header
 
 $repoUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main'
 $tempDir = "$env:TEMP\spvc-install-$([guid]::NewGuid().ToString('N'))"
-New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-
-$exitCode = 0
 
 try {
-    # Download do script de instalação principal
-    Write-Host "  Baixando instalador..." -ForegroundColor $colors.Info
+    New-Item -ItemType Directory -Path $tempDir -Force -ErrorAction Stop | Out-Null
+    
+    Write-Host "  Criando diretório temporário: $tempDir" -ForegroundColor $colors.Info
+    Write-Host "  Baixando scripts..." -ForegroundColor $colors.Info
+    
+    # Download
     $installScript = Join-Path $tempDir 'Install.ps1'
-    Invoke-WebRequest -Uri "$repoUrl/Install.ps1" -OutFile $installScript -UseBasicParsing -ErrorAction Stop
-    
-    # Download do script de validação
     $validateScript = Join-Path $tempDir 'Validate-Prerequisites.ps1'
+    
+    Invoke-WebRequest -Uri "$repoUrl/Install.ps1" -OutFile $installScript -UseBasicParsing -ErrorAction Stop
+    Write-Host "    ✅ Install.ps1 baixado" -ForegroundColor $colors.Success
+    
     Invoke-WebRequest -Uri "$repoUrl/scripts/Validate-Prerequisites.ps1" -OutFile $validateScript -UseBasicParsing -ErrorAction Stop
+    Write-Host "    ✅ Validate-Prerequisites.ps1 baixado" -ForegroundColor $colors.Success
     
-    Write-Host "  ✅ Arquivos baixados com sucesso" -ForegroundColor $colors.Success
+    # Menu
+    Write-Host "`n" -ForegroundColor $colors.Header
+    Write-Host "╔══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $colors.Header
+    Write-Host "║                       OPÇÕES DE INSTALAÇÃO                                  ║" -ForegroundColor $colors.Header
+    Write-Host "╚══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $colors.Header
+    Write-Host ""
+    Write-Host "  1️⃣  Teste (WhatIf) - Mostra o que seria feito SEM fazer nada" -ForegroundColor $colors.Info
+    Write-Host "  2️⃣  Instalar - Instalação completa" -ForegroundColor $colors.Success
+    Write-Host "  3️⃣  Cancelar" -ForegroundColor $colors.Error
+    Write-Host ""
     
-    # Executa validação
-    Write-Host "`n  Executando validações..." -ForegroundColor $colors.Info
-    & $validateScript
+    $choice = Read-Host "  Escolha uma opção [1-3]"
     
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "  ❌ Validações falharam" -ForegroundColor $colors.Error
-        $exitCode = 1
-    } else {
-        # Menu de opções
-        Write-Host "`n" -ForegroundColor $colors.Header
-        Write-Host "╔══════════════════════════════════════════════════════════════════════════════╗" -ForegroundColor $colors.Header
-        Write-Host "║                       OPÇÕES DE INSTALAÇÃO                                  ║" -ForegroundColor $colors.Header
-        Write-Host "╚══════════════════════════════════════════════════════════════════════════════╝" -ForegroundColor $colors.Header
-        Write-Host "  1. ℹ️  Teste (WhatIf) - Mostra o que seria feito SEM fazer nada" -ForegroundColor $colors.Info
-        Write-Host "  2. ✅ Instalar - Instalação completa" -ForegroundColor $colors.Success
-        Write-Host "  3. ❌ Cancelar" -ForegroundColor $colors.Error
-        Write-Host ""
-        
-        $choice = Read-Host "  Escolha uma opção [1-3]"
-        
-        switch ($choice) {
-            '1' {
-                Write-Host "`n  Executando em modo WhatIf..." -ForegroundColor $colors.Info
-                & $installScript -WhatIf -SkipEmailTest
-            }
-            '2' {
-                Write-Host "`n  Executando instalação..." -ForegroundColor $colors.Info
-                & $installScript -SkipEmailTest
-            }
-            '3' {
-                Write-Host "`n  Instalação cancelada" -ForegroundColor $colors.Warning
-                $exitCode = 0
-            }
-            default {
-                Write-Host "  ❌ Opção inválida" -ForegroundColor $colors.Error
-                $exitCode = 1
-            }
+    switch ($choice) {
+        '1' {
+            Write-Host "`n  Executando em modo WhatIf..." -ForegroundColor $colors.Info
+            Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Info
+            & $installScript -WhatIf -SkipEmailTest
+            Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Info
+        }
+        '2' {
+            Write-Host "`n  Executando instalação..." -ForegroundColor $colors.Success
+            Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Success
+            & $installScript -SkipEmailTest
+            Write-Host "  ────────────────────────────────────────────────" -ForegroundColor $colors.Success
+        }
+        '3' {
+            Write-Host "`n  Instalação cancelada" -ForegroundColor $colors.Warning
+        }
+        default {
+            Write-Host "  ❌ Opção inválida" -ForegroundColor $colors.Error
         }
     }
     
 } catch {
     Write-Host "  ❌ ERRO: $($_.Exception.Message)" -ForegroundColor $colors.Error
-    $exitCode = 1
+    Write-Host "  Stack: $($_.ScriptStackTrace)" -ForegroundColor $colors.Error
 } finally {
-    # Limpa arquivos temporários
-    Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    # Limpeza
+    if (Test-Path $tempDir) {
+        Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # ============================================================================
 # FINALIZAÇÃO
 # ============================================================================
-if ($exitCode -eq 0) {
-    Write-Host "`n✅ Processo concluído com sucesso!" -ForegroundColor $colors.Success
-} else {
-    Write-Host "`n❌ Processo concluído com erros" -ForegroundColor $colors.Error
-}
+Write-Host "`n" -ForegroundColor $colors.Header
+Write-Host "✅ Processo concluído!" -ForegroundColor $colors.Success
+Write-Host "📁 Log completo: $logPath" -ForegroundColor $colors.Info
+Write-Host ""
+Write-Host "Pressione ENTER para fechar..." -ForegroundColor $colors.Warning
+Read-Host | Out-Null
 
-# Se foi executado via iex (one-liner), aguarda pressionar tecla antes de fechar
-if ($executedViaIex -or $PROFILE -eq $null) {
-    Wait-KeyPress "Pressione qualquer tecla para fechar..."
-}
-
-exit $exitCode
+Stop-Transcript | Out-Null
