@@ -1,11 +1,11 @@
 Describe 'Install.ps1' {
     BeforeAll {
         $installScript = (Resolve-Path (Join-Path $PSScriptRoot '../Install.ps1')).Path
-        . ([scriptblock]::Create((Get-Content -LiteralPath $installScript -Raw)))
+        . $installScript -SkipAutoRun
     }
 
     BeforeEach {
-        $script:RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main'
+        $RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main'
         $script:RequiredFiles = @(
             'scripts/cleanup-versions.ps1',
             'scripts/Send-EmailReport.ps1',
@@ -24,6 +24,15 @@ Describe 'Install.ps1' {
         $headers['Expires'] | Should -Be '0'
     }
 
+    It 'separa base e branch ao receber uma URL remota customizada' {
+        $RepositoryRawUrl = 'https://mirror.example/repos/sharepoint-version-cleanup/release'
+
+        $location = Get-RepositoryRawLocation
+
+        $location.BaseUrl | Should -Be 'https://mirror.example/repos/sharepoint-version-cleanup'
+        $location.ConfiguredBranch | Should -Be 'release'
+    }
+
     It 'resolve a primeira branch candidata disponivel para componente obrigatorio' {
         Mock Invoke-WebRequest {
             if ($Uri -match '/main/') {
@@ -37,7 +46,7 @@ Describe 'Install.ps1' {
 
         $result.Branch | Should -Be 'master'
         $result.Uri | Should -Match '/master/scripts/cleanup-versions\.ps1$'
-        Assert-MockCalled Invoke-WebRequest 2 -Scope It -ParameterFilter { $Uri -match '/main/' }
+        Assert-MockCalled Invoke-WebRequest -Scope It -ParameterFilter { $Uri -match '/main/' }
         Assert-MockCalled Invoke-WebRequest 1 -Scope It -ParameterFilter { $Uri -match '/master/' -and $Method -eq 'Head' }
     }
 

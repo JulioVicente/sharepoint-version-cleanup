@@ -12,7 +12,8 @@ param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
     [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main',
     [switch]$SkipEmailTest,
-    [switch]$SkipAppRegistration
+    [switch]$SkipAppRegistration,
+    [switch]$SkipAutoRun
 )
 
 Set-StrictMode -Version Latest
@@ -94,23 +95,42 @@ function New-NoCacheHeaders {
     }
 }
 
-function Get-RepositoryRawBaseUrl {
+function Get-RepositoryRawLocation {
     $trimmedUrl = $RepositoryRawUrl.TrimEnd('/')
-    if ($trimmedUrl -match '^(https://raw\.githubusercontent\.com/[^/]+/[^/]+)(?:/[^/]+(?:/.*)?)?$') {
-        return $Matches[1]
+    if ($trimmedUrl -match '^(https://raw\.githubusercontent\.com/[^/]+/[^/]+)/([^/]+)(?:/.*)?$') {
+        return @{
+            BaseUrl          = $Matches[1]
+            ConfiguredBranch = $Matches[2]
+        }
     }
 
-    return $trimmedUrl
+    $uri = $null
+    if ([Uri]::TryCreate($trimmedUrl, [UriKind]::Absolute, [ref]$uri)) {
+        $segments = @($uri.AbsolutePath.Trim('/') -split '/' | Where-Object { $_ })
+        if ($segments.Count -ge 3) {
+            $basePath = $segments[0..($segments.Count - 2)] -join '/'
+            return @{
+                BaseUrl          = '{0}://{1}/{2}' -f $uri.Scheme, $uri.Authority, $basePath
+                ConfiguredBranch = $segments[-1]
+            }
+        }
+    }
+
+    return @{
+        BaseUrl          = $trimmedUrl
+        ConfiguredBranch = $null
+    }
+}
+
+function Get-RepositoryRawBaseUrl {
+    return (Get-RepositoryRawLocation).BaseUrl
 }
 
 function Get-RepositoryBranchCandidates {
-    $trimmedUrl = $RepositoryRawUrl.TrimEnd('/')
+    $location = Get-RepositoryRawLocation
     $branches = [Collections.Generic.List[string]]::new()
-    if ($trimmedUrl -match '^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)(?:/.*)?$') {
-        $configuredBranch = $Matches[1]
-        if (-not [string]::IsNullOrWhiteSpace($configuredBranch)) {
-            $branches.Add($configuredBranch)
-        }
+    if (-not [string]::IsNullOrWhiteSpace($location.ConfiguredBranch)) {
+        $branches.Add($location.ConfiguredBranch)
     }
 
     foreach ($branch in 'main', 'master') {
@@ -212,6 +232,8 @@ function Save-RequiredFileFromRepository {
             Start-Sleep -Seconds 5
         }
     }
+
+    throw "Falha ao baixar o componente obrigatorio '$RelativePath': fluxo de repeticao encerrado sem retorno."
 }
 
 function Copy-ProjectFiles {
@@ -479,6 +501,6 @@ function Invoke-Installer {
     }
 }
 
-if ($MyInvocation.InvocationName -ne '.') {
+if (-not $SkipAutoRun) {
     Invoke-Installer
 }

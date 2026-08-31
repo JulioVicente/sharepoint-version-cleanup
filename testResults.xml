@@ -1,0 +1,23 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<test-results xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="nunit_schema_2.5.xsd" name="Pester" total="6" errors="0" failures="0" not-run="0" inconclusive="0" ignored="0" skipped="0" invalid="0" date="2026-08-31" time="19:10:00">
+  <environment nunit-version="2.5.8.0" clr-version="10.0.11" machine-name="runnervmgx7h7" user-domain="" platform="Linux" os-version="6.17.0-1022-azure" cwd="/home/runner/work/sharepoint-version-cleanup/sharepoint-version-cleanup" user="runner" />
+  <culture-info current-culture="" current-uiculture="" />
+  <test-suite type="TestFixture" name="Pester" executed="True" result="Success" success="True" time="1.0727" asserts="0" description="Pester">
+    <results>
+      <test-suite type="TestFixture" name="/home/runner/work/sharepoint-version-cleanup/sharepoint-version-cleanup/tests/Install.Tests.ps1" executed="True" result="Success" success="True" time="1.0727" asserts="0" description="/home/runner/work/sharepoint-version-cleanup/sharepoint-version-cleanup/tests/Install.Tests.ps1">
+        <results>
+          <test-suite type="TestFixture" name="Install.ps1" executed="True" result="Success" success="True" time="0.765" asserts="0" description="Install.ps1">
+            <results>
+              <test-case description="constroi cabecalhos sem cache para cargas remotas" name="Install.ps1.constroi cabecalhos sem cache para cargas remotas" time="0.0979" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="separa base e branch ao receber uma URL remota customizada" name="Install.ps1.separa base e branch ao receber uma URL remota customizada" time="0.0481" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="resolve a primeira branch candidata disponivel para componente obrigatorio" name="Install.ps1.resolve a primeira branch candidata disponivel para componente obrigatorio" time="0.3385" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="falha com mensagem clara quando nenhuma branch candidata contem o componente" name="Install.ps1.falha com mensagem clara quando nenhuma branch candidata contem o componente" time="0.0956" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="baixa arquivo obrigatorio sem cache e valida o payload salvo" name="Install.ps1.baixa arquivo obrigatorio sem cache e valida o payload salvo" time="0.0814" asserts="0" success="True" result="Success" executed="True" />
+              <test-case description="percorre todos os componentes obrigatorios configurados" name="Install.ps1.percorre todos os componentes obrigatorios configurados" time="0.0594" asserts="0" success="True" result="Success" executed="True" />
+            </results>
+          </test-suite>
+        </results>
+      </test-suite>
+    </results>
+  </test-suite>
+</test-results>
