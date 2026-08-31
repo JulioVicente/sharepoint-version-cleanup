@@ -90,7 +90,9 @@ function Copy-ProjectFiles {
     foreach ($relativePath in $script:RequiredFiles) {
         $target = Join-Path $Destination ($relativePath -replace '/', '\')
         $targetDirectory = Split-Path -Parent $target
-        New-Item -ItemType Directory -Path $targetDirectory -Force | Out-Null
+        
+        # Garante que a pasta existe ANTES de tentar baixar
+        New-Item -ItemType Directory -Path $targetDirectory -Force -ErrorAction Stop | Out-Null
 
         # Ao executar de um clone, prefira os arquivos locais. No one-liner, baixe-os.
         $localSource = if ($PSScriptRoot) {
@@ -98,16 +100,33 @@ function Copy-ProjectFiles {
         } else { $null }
 
         if ($localSource -and (Test-Path -LiteralPath $localSource -PathType Leaf)) {
+            Write-Host "  Usando arquivo local: $relativePath"
             Copy-Item -LiteralPath $localSource -Destination $target -Force
             continue
         }
 
         $uri = "$($RepositoryRawUrl.TrimEnd('/'))/$relativePath"
-        try {
-            Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $target
-        } catch {
-            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-            throw "Componente obrigatorio indisponivel: $uri. $($_.Exception.Message)"
+        $maxRetries = 3
+        $retryCount = 0
+        $downloaded = $false
+
+        while (-not $downloaded -and $retryCount -lt $maxRetries) {
+            try {
+                Write-Host "  Baixando: $relativePath"
+                Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $target -TimeoutSec 30 -ErrorAction Stop
+                $downloaded = $true
+                Write-Host "    OK: $relativePath" -ForegroundColor Green
+            } catch {
+                $retryCount++
+                if ($retryCount -lt $maxRetries) {
+                    Write-Host "    AVISO: Falha na tentativa $retryCount de $maxRetries. Aguardando 5 segundos..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds 5
+                } else {
+                    # Limpa arquivo parcial
+                    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+                    throw "Componente obrigatorio indisponivel apos $maxRetries tentativas: $uri. $($_.Exception.Message)"
+                }
+            }
         }
     }
 }
@@ -290,7 +309,7 @@ try {
 
     if ($PSCmdlet.ShouldProcess($InstallPath, 'Criar diretorio de instalacao')) {
         New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
-        foreach ($folder in 'config', 'state', 'logs', 'certificates') {
+        foreach ($folder in 'config', 'state', 'logs', 'certificates', 'scripts', 'templates') {
             New-Item -ItemType Directory -Path (Join-Path $InstallPath $folder) -Force | Out-Null
         }
     }
