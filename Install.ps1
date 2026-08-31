@@ -25,7 +25,10 @@ $script:NewTasks = [Collections.Generic.List[string]]::new()
 $script:RequiredFiles = @(
     'scripts/cleanup-versions.ps1',
     'scripts/Send-EmailReport.ps1',
-    'templates/email-template.html'
+    'scripts/Enable-Production.ps1',
+    'scripts/Invoke-Pilot.ps1',
+    'templates/email-template.html',
+    'config/config.example.json'
 )
 
 function Write-Step {
@@ -83,6 +86,134 @@ function Ensure-PnPModule {
     Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -Force
 }
 
+function New-NoCacheHeaders {
+    return @{
+        'Cache-Control' = 'no-cache, no-store, must-revalidate'
+        'Pragma' = 'no-cache'
+        'Expires' = '0'
+    }
+}
+
+function Get-RepositoryRawBaseUrl {
+    $trimmedUrl = $RepositoryRawUrl.TrimEnd('/')
+    if ($trimmedUrl -match '^(https://raw\.githubusercontent\.com/[^/]+/[^/]+)(?:/[^/]+(?:/.*)?)?$') {
+        return $Matches[1]
+    }
+
+    return $trimmedUrl
+}
+
+function Get-RepositoryBranchCandidates {
+    $trimmedUrl = $RepositoryRawUrl.TrimEnd('/')
+    $branches = [Collections.Generic.List[string]]::new()
+    if ($trimmedUrl -match '^https://raw\.githubusercontent\.com/[^/]+/[^/]+/([^/]+)(?:/.*)?$') {
+        $configuredBranch = $Matches[1]
+        if (-not [string]::IsNullOrWhiteSpace($configuredBranch)) {
+            $branches.Add($configuredBranch)
+        }
+    }
+
+    foreach ($branch in 'main', 'master') {
+        if ($branch -notin $branches) {
+            $branches.Add($branch)
+        }
+    }
+
+    return @($branches)
+}
+
+function Test-RemoteUrlAvailable {
+    param([Parameter(Mandatory = $true)][string]$Uri)
+
+    foreach ($method in 'Head', 'Get') {
+        $headers = New-NoCacheHeaders
+        if ($method -eq 'Get') {
+            $headers['Range'] = 'bytes=0-0'
+        }
+
+        try {
+            Invoke-WebRequest -UseBasicParsing -Uri $Uri -Method $method -Headers $headers -SkipHeaderValidation -TimeoutSec 20 -ErrorAction Stop | Out-Null
+            return $true
+        } catch {
+            Write-Host "    $method indisponivel para: $Uri ($($_.Exception.Message))" -ForegroundColor DarkYellow
+        }
+    }
+
+    return $false
+}
+
+function Resolve-RequiredFileRemoteUrl {
+    param([Parameter(Mandatory = $true)][string]$RelativePath)
+
+    $baseUrl = Get-RepositoryRawBaseUrl
+    $attemptedBranches = [Collections.Generic.List[string]]::new()
+    foreach ($branch in Get-RepositoryBranchCandidates) {
+        $attemptedBranches.Add($branch)
+        $candidateUrl = '{0}/{1}/{2}' -f $baseUrl.TrimEnd('/'), $branch, $RelativePath
+        Write-Host "  Verificando componente remoto: $RelativePath (branch '$branch')" -ForegroundColor DarkCyan
+        if (Test-RemoteUrlAvailable -Uri $candidateUrl) {
+            Write-Host "    Resolvido: $candidateUrl" -ForegroundColor Green
+            return [pscustomobject]@{
+                RelativePath      = $RelativePath
+                Branch            = $branch
+                Uri               = $candidateUrl
+                AttemptedBranches = @($attemptedBranches)
+            }
+        }
+    }
+
+    throw "Componente obrigatorio remoto indisponivel: $RelativePath. Branches testadas: $($attemptedBranches -join ', ')."
+}
+
+function Assert-PreparedFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][string]$SourceDescription
+    )
+
+    if (-not (Test-Path -LiteralPath $TargetPath -PathType Leaf)) {
+        throw "Falha ao preparar o componente obrigatorio '$RelativePath' a partir de ${SourceDescription}: arquivo nao encontrado em $TargetPath."
+    }
+
+    $item = Get-Item -LiteralPath $TargetPath -ErrorAction Stop
+    if ($item.Length -le 0) {
+        throw "Falha ao preparar o componente obrigatorio '$RelativePath' a partir de ${SourceDescription}: arquivo vazio em $TargetPath."
+    }
+}
+
+function Save-RequiredFileFromRepository {
+    param(
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $resolved = Resolve-RequiredFileRemoteUrl -RelativePath $RelativePath
+    $target = Join-Path $Destination ($RelativePath -replace '/', '\')
+    $targetDirectory = Split-Path -Parent $target
+    New-Item -ItemType Directory -Path $targetDirectory -Force -ErrorAction Stop | Out-Null
+    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+
+    $maxRetries = 3
+    for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+        try {
+            Write-Host "  Baixando componente obrigatorio: $RelativePath" -ForegroundColor DarkCyan
+            Invoke-WebRequest -UseBasicParsing -Uri $resolved.Uri -Headers (New-NoCacheHeaders) -SkipHeaderValidation -OutFile $target -TimeoutSec 30 -ErrorAction Stop
+            Assert-PreparedFile -RelativePath $RelativePath -TargetPath $target -SourceDescription "$($resolved.Uri) (branch $($resolved.Branch))"
+            Write-Host "    OK: $RelativePath <- $($resolved.Uri)" -ForegroundColor Green
+            return $target
+        } catch {
+            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+            if ($attempt -ge $maxRetries) {
+                throw "Falha ao baixar o componente obrigatorio '$RelativePath' de $($resolved.Uri) (branch $($resolved.Branch)) apos $maxRetries tentativas: $($_.Exception.Message)"
+            }
+
+            Write-Host "    AVISO: tentativa $attempt de $maxRetries falhou para $RelativePath. Repetindo em 5 segundos..." -ForegroundColor Yellow
+            Start-Sleep -Seconds 5
+        }
+    }
+}
+
 function Copy-ProjectFiles {
     param([string]$Destination)
 
@@ -90,11 +221,8 @@ function Copy-ProjectFiles {
     foreach ($relativePath in $script:RequiredFiles) {
         $target = Join-Path $Destination ($relativePath -replace '/', '\')
         $targetDirectory = Split-Path -Parent $target
-        
-        # Garante que a pasta existe ANTES de tentar baixar
         New-Item -ItemType Directory -Path $targetDirectory -Force -ErrorAction Stop | Out-Null
 
-        # Ao executar de um clone, prefira os arquivos locais. No one-liner, baixe-os.
         $localSource = if ($PSScriptRoot) {
             Join-Path $PSScriptRoot ($relativePath -replace '/', '\')
         } else { $null }
@@ -102,32 +230,26 @@ function Copy-ProjectFiles {
         if ($localSource -and (Test-Path -LiteralPath $localSource -PathType Leaf)) {
             Write-Host "  Usando arquivo local: $relativePath"
             Copy-Item -LiteralPath $localSource -Destination $target -Force
+            Assert-PreparedFile -RelativePath $relativePath -TargetPath $target -SourceDescription $localSource
             continue
         }
 
-        $uri = "$($RepositoryRawUrl.TrimEnd('/'))/$relativePath"
-        $maxRetries = 3
-        $retryCount = 0
-        $downloaded = $false
-
-        while (-not $downloaded -and $retryCount -lt $maxRetries) {
-            try {
-                Write-Host "  Baixando: $relativePath"
-                Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $target -TimeoutSec 30 -ErrorAction Stop
-                $downloaded = $true
-                Write-Host "    OK: $relativePath" -ForegroundColor Green
-            } catch {
-                $retryCount++
-                if ($retryCount -lt $maxRetries) {
-                    Write-Host "    AVISO: Falha na tentativa $retryCount de $maxRetries. Aguardando 5 segundos..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 5
-                } else {
-                    # Limpa arquivo parcial
-                    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-                    throw "Componente obrigatorio indisponivel apos $maxRetries tentativas: $uri. $($_.Exception.Message)"
-                }
-            }
+        try {
+            Save-RequiredFileFromRepository -RelativePath $relativePath -Destination $Destination | Out-Null
+        } catch {
+            throw "Falha ao preparar o componente obrigatorio '$relativePath': $($_.Exception.Message)"
         }
+    }
+}
+
+function Assert-InstalledRequiredFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Componente obrigatorio da instalacao ausente: $RelativePath. A etapa de obtencao remota nao concluiu com sucesso para $Path."
     }
 }
 
@@ -259,6 +381,7 @@ function Install-ScheduledTasks {
     $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
     $cleanupScript = Join-Path $Destination 'scripts\cleanup-versions.ps1'
     $configPath = Join-Path $Destination 'config\config.json'
+    Assert-InstalledRequiredFile -Path $cleanupScript -RelativePath 'scripts/cleanup-versions.ps1'
     Write-Host 'Informe a senha da conta atual para que as tarefas possam acessar o SharePoint mesmo sem sessao interativa.'
     $taskUser = "$env:USERDOMAIN\$env:USERNAME"
     $taskCredential = Get-Credential -UserName $taskUser -Message 'Credencial da conta que executara as tarefas'
@@ -300,55 +423,62 @@ function Install-ScheduledTasks {
     }
 }
 
-$installExisted = Test-Path -LiteralPath $InstallPath
-$rollbackRoot = Join-Path ([IO.Path]::GetTempPath()) ("spvc-install-rollback-" + [guid]::NewGuid().ToString('N'))
-try {
-    Write-Host 'SharePoint Version Cleanup - Instalacao' -ForegroundColor Green
-    Assert-Environment
-    Ensure-PnPModule
+function Invoke-Installer {
+    $installExisted = Test-Path -LiteralPath $InstallPath
+    $rollbackRoot = Join-Path ([IO.Path]::GetTempPath()) ("spvc-install-rollback-" + [guid]::NewGuid().ToString('N'))
+    try {
+        Write-Host 'SharePoint Version Cleanup - Instalacao' -ForegroundColor Green
+        Assert-Environment
+        Ensure-PnPModule
 
-    if ($PSCmdlet.ShouldProcess($InstallPath, 'Criar diretorio de instalacao')) {
-        New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
-        foreach ($folder in 'config', 'state', 'logs', 'certificates', 'scripts', 'templates') {
-            New-Item -ItemType Directory -Path (Join-Path $InstallPath $folder) -Force | Out-Null
+        if ($PSCmdlet.ShouldProcess($InstallPath, 'Criar diretorio de instalacao')) {
+            New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
+            foreach ($folder in 'config', 'state', 'logs', 'certificates', 'scripts', 'templates') {
+                New-Item -ItemType Directory -Path (Join-Path $InstallPath $folder) -Force | Out-Null
+            }
         }
-    }
 
-    if ($installExisted) {
-        New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
-        Copy-Item -LiteralPath $InstallPath -Destination (Join-Path $rollbackRoot 'previous') -Recurse -Force
-    }
-    Copy-ProjectFiles -Destination $InstallPath
-    $configuration = New-Configuration -Destination $InstallPath
-    $configPath = Join-Path $InstallPath 'config\config.json'
-    $configuration | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
-    Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath
+        if ($installExisted) {
+            New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
+            Copy-Item -LiteralPath $InstallPath -Destination (Join-Path $rollbackRoot 'previous') -Recurse -Force
+        }
+        Copy-ProjectFiles -Destination $InstallPath
+        $configuration = New-Configuration -Destination $InstallPath
+        $configPath = Join-Path $InstallPath 'config\config.json'
+        $configuration | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
+        Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath
 
-    if ($configuration.Email.Enabled -and -not $SkipEmailTest) {
-        Write-Step 'Enviando email de teste'
-        $emailScript = Join-Path $InstallPath 'scripts\Send-EmailReport.ps1'
-        & $emailScript -ConfigPath $configPath -Test
-    }
+        if ($configuration.Email.Enabled -and -not $SkipEmailTest) {
+            Write-Step 'Enviando email de teste'
+            $emailScript = Join-Path $InstallPath 'scripts\Send-EmailReport.ps1'
+            Assert-InstalledRequiredFile -Path $emailScript -RelativePath 'scripts/Send-EmailReport.ps1'
+            & $emailScript -ConfigPath $configPath -Test
+        }
 
-    Write-Host "`nInstalacao concluida em: $InstallPath" -ForegroundColor Green
-    Write-Host "Configuracao: $configPath"
-    Write-Host "Tarefas criadas com o prefixo: $script:TaskPrefix"
-} catch {
-    $originalError = $_.Exception.Message
-    Write-Warning 'Falha detectada; revertendo arquivos e tarefas locais da instalacao.'
-    foreach ($taskName in $script:NewTasks) {
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        Write-Host "`nInstalacao concluida em: $InstallPath" -ForegroundColor Green
+        Write-Host "Configuracao: $configPath"
+        Write-Host "Tarefas criadas com o prefixo: $script:TaskPrefix"
+    } catch {
+        $originalError = $_.Exception.Message
+        Write-Warning 'Falha detectada; revertendo arquivos e tarefas locais da instalacao.'
+        foreach ($taskName in $script:NewTasks) {
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+        }
+        foreach ($entry in $script:TaskBackups.GetEnumerator()) {
+            Register-ScheduledTask -TaskName $entry.Key -Xml $entry.Value -Force -ErrorAction SilentlyContinue | Out-Null
+        }
+        if ($installExisted -and (Test-Path -LiteralPath (Join-Path $rollbackRoot 'previous'))) {
+            Remove-Item -LiteralPath $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
+            Copy-Item -LiteralPath (Join-Path $rollbackRoot 'previous') -Destination $InstallPath -Recurse -Force
+        } elseif (-not $installExisted -and (Test-Path -LiteralPath $InstallPath)) {
+            Remove-Item -LiteralPath $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        throw "Instalacao interrompida e alteracoes locais revertidas: $originalError. O registro Entra/certificado pode exigir remocao administrativa manual."
+    } finally {
+        Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
-    foreach ($entry in $script:TaskBackups.GetEnumerator()) {
-        Register-ScheduledTask -TaskName $entry.Key -Xml $entry.Value -Force -ErrorAction SilentlyContinue | Out-Null
-    }
-    if ($installExisted -and (Test-Path -LiteralPath (Join-Path $rollbackRoot 'previous'))) {
-        Remove-Item -LiteralPath $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
-        Copy-Item -LiteralPath (Join-Path $rollbackRoot 'previous') -Destination $InstallPath -Recurse -Force
-    } elseif (-not $installExisted -and (Test-Path -LiteralPath $InstallPath)) {
-        Remove-Item -LiteralPath $InstallPath -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    throw "Instalacao interrompida e alteracoes locais revertidas: $originalError. O registro Entra/certificado pode exigir remocao administrativa manual."
-} finally {
-    Remove-Item -LiteralPath $rollbackRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($MyInvocation.InvocationName -ne '.') {
+    Invoke-Installer
 }
