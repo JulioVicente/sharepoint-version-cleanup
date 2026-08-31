@@ -6,13 +6,12 @@ Valida todos os pré-requisitos para executar SharePoint Version Cleanup.
 .DESCRIPTION
 Verifica:
 - Windows (versão)
-- PowerShell 7.4+
+- PowerShell 7.4+ (com auto-atualização)
 - Privilégios de Administrador
 - Conectividade com Microsoft 365
-- PnP.PowerShell disponível
+- PnP.PowerShell disponível (com auto-instalação)
 - Espaço em disco
 - Certificados existentes
-- Acesso ao site SharePoint
 
 .EXAMPLE
 & .\scripts\Validate-Prerequisites.ps1
@@ -36,7 +35,7 @@ $validationResults = @()
 # ============================================================================
 # 1. SISTEMA OPERACIONAL
 # ============================================================================
-Write-Host "`n[1/8] Validando Sistema Operacional..." -ForegroundColor Yellow
+Write-Host "`n[1/9] Validando Sistema Operacional..." -ForegroundColor Yellow
 
 $osCheck = if ($env:OS -eq 'Windows_NT') {
     $osVersion = [System.Environment]::OSVersion.VersionString
@@ -51,7 +50,7 @@ $validationResults += $osCheck
 # ============================================================================
 # 2. PRIVILÉGIOS DE ADMINISTRADOR
 # ============================================================================
-Write-Host "`n[2/8] Validando Privilégios de Administrador..." -ForegroundColor Yellow
+Write-Host "`n[2/9] Validando Privilégios de Administrador..." -ForegroundColor Yellow
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -67,25 +66,48 @@ $adminCheck = if ($isAdmin) {
 $validationResults += $adminCheck
 
 # ============================================================================
-# 3. POWERSHELL 7.4+
+# 3. POWERSHELL 7.4+ (COM AUTO-ATUALIZAÇÃO)
 # ============================================================================
-Write-Host "`n[3/8] Validando PowerShell 7.4+..." -ForegroundColor Yellow
+Write-Host "`n[3/9] Validando PowerShell 7.4+..." -ForegroundColor Yellow
 
 $psVersion = $PSVersionTable.PSVersion
 $pwshCheck = if ($psVersion -ge [version]'7.4.0') {
     Write-Host "  ✅ PowerShell $psVersion (requerido: 7.4+)" -ForegroundColor Green
     $true
 } else {
-    Write-Host "  ❌ ERRO: PowerShell $psVersion detectado (requerido: 7.4+)" -ForegroundColor Red
-    Write-Host "    Instale com: winget install --id Microsoft.PowerShell --source winget" -ForegroundColor Yellow
-    $false
+    Write-Host "  ⚠️  PowerShell $psVersion detectado (requerido: 7.4+)" -ForegroundColor Yellow
+    Write-Host "    Iniciando atualização automática..." -ForegroundColor Cyan
+    
+    try {
+        # Verifica se winget está disponível
+        $wingetExists = $null -ne (Get-Command winget -ErrorAction SilentlyContinue)
+        
+        if ($wingetExists) {
+            Write-Host "    Instalando PowerShell 7 via WinGet..." -ForegroundColor Cyan
+            & winget install --id Microsoft.PowerShell --source winget --accept-source-agreements --accept-package-agreements -h
+            Write-Host "  ✅ PowerShell 7 instalado!" -ForegroundColor Green
+            Write-Host "    ℹ️  Abra uma nova sessão do pwsh.exe como Administrador para continuar" -ForegroundColor Yellow
+            $false
+        } else {
+            Write-Host "  ⚠️  WinGet não está disponível" -ForegroundColor Yellow
+            Write-Host "    Instalação manual necessária:" -ForegroundColor Yellow
+            Write-Host "    1. Visite: https://github.com/PowerShell/PowerShell/releases" -ForegroundColor Gray
+            Write-Host "    2. Baixe: PowerShell-7.x.x-win-x64.msi" -ForegroundColor Gray
+            Write-Host "    3. Execute o instalador e reinicie a sessão" -ForegroundColor Gray
+            $false
+        }
+    } catch {
+        Write-Host "  ❌ ERRO ao instalar PowerShell: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "    Instale manualmente em: https://github.com/PowerShell/PowerShell/releases" -ForegroundColor Yellow
+        $false
+    }
 }
 $validationResults += $pwshCheck
 
 # ============================================================================
 # 4. CONECTIVIDADE COM MICROSOFT 365
 # ============================================================================
-Write-Host "`n[4/8] Validando Conectividade com Microsoft 365..." -ForegroundColor Yellow
+Write-Host "`n[4/9] Validando Conectividade com Microsoft 365..." -ForegroundColor Yellow
 
 $m365Check = try {
     $response = Invoke-WebRequest -Uri 'https://graph.microsoft.com' -Method Head -UseBasicParsing -TimeoutSec 5 -ErrorAction SilentlyContinue
@@ -104,9 +126,9 @@ $m365Check = try {
 $validationResults += $m365Check
 
 # ============================================================================
-# 5. MÓDULO PNP.POWERSHELL
+# 5. MÓDULO PNP.POWERSHELL (COM AUTO-INSTALAÇÃO)
 # ============================================================================
-Write-Host "`n[5/8] Validando PnP.PowerShell..." -ForegroundColor Yellow
+Write-Host "`n[5/9] Validando PnP.PowerShell..." -ForegroundColor Yellow
 
 $pnpModule = Get-Module -ListAvailable PnP.PowerShell | Sort-Object Version -Descending | Select-Object -First 1
 
@@ -116,7 +138,17 @@ $pnpCheck = if ($pnpModule) {
         $true
     } else {
         Write-Host "  ⚠️  PnP.PowerShell $($pnpModule.Version) detectado (recomendado: 3.0+)" -ForegroundColor Yellow
-        $true
+        Write-Host "    Iniciando atualização..." -ForegroundColor Cyan
+        
+        try {
+            Write-Host "    Atualizando PnP.PowerShell para todos os usuários..." -ForegroundColor Cyan
+            Update-Module PnP.PowerShell -Scope AllUsers -Repository PSGallery -Force -ErrorAction Stop
+            Write-Host "  ✅ PnP.PowerShell atualizado com sucesso!" -ForegroundColor Green
+            $true
+        } catch {
+            Write-Host "  ⚠️  Falha ao atualizar (versão existente será usada)" -ForegroundColor Yellow
+            $true
+        }
     }
 } else {
     Write-Host "  ℹ️  PnP.PowerShell não está instalado" -ForegroundColor Cyan
@@ -138,25 +170,30 @@ $validationResults += $pnpCheck
 # ============================================================================
 # 6. ESPAÇO EM DISCO
 # ============================================================================
-Write-Host "`n[6/8] Validando Espaço em Disco..." -ForegroundColor Yellow
+Write-Host "`n[6/9] Validando Espaço em Disco..." -ForegroundColor Yellow
 
-$programDataDrive = ([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.Name -eq 'C:\' })
-$freeMB = [math]::Round($programDataDrive.AvailableFreeSpace / 1MB)
-$requiredMB = 500
+try {
+    $programDataDrive = ([System.IO.DriveInfo]::GetDrives() | Where-Object { $_.Name -eq 'C:\' })
+    $freeMB = [math]::Round($programDataDrive.AvailableFreeSpace / 1MB)
+    $requiredMB = 500
 
-$diskCheck = if ($freeMB -gt $requiredMB) {
-    Write-Host "  ✅ Espaço disponível: $freeMB MB (requerido: $requiredMB MB)" -ForegroundColor Green
-    $true
-} else {
-    Write-Host "  ⚠️  Espaço limitado: $freeMB MB (requerido: $requiredMB MB)" -ForegroundColor Yellow
-    $true
+    $diskCheck = if ($freeMB -gt $requiredMB) {
+        Write-Host "  ✅ Espaço disponível: $freeMB MB (requerido: $requiredMB MB)" -ForegroundColor Green
+        $true
+    } else {
+        Write-Host "  ⚠️  Espaço limitado: $freeMB MB (requerido: $requiredMB MB)" -ForegroundColor Yellow
+        $true
+    }
+} catch {
+    Write-Host "  ⚠️  Não foi possível verificar espaço em disco" -ForegroundColor Yellow
+    $diskCheck = $true
 }
 $validationResults += $diskCheck
 
 # ============================================================================
 # 7. PERMISSÕES EM PROGRAMDATA
 # ============================================================================
-Write-Host "`n[7/8] Validando Permissões em %ProgramData%..." -ForegroundColor Yellow
+Write-Host "`n[7/9] Validando Permissões em %ProgramData%..." -ForegroundColor Yellow
 
 $programDataPath = "$env:ProgramData\SharePointVersionCleanup"
 $permissionsCheck = try {
@@ -175,7 +212,7 @@ $validationResults += $permissionsCheck
 # ============================================================================
 # 8. CERTIFICADOS DISPONÍVEIS
 # ============================================================================
-Write-Host "`n[8/8] Validando Certificados..." -ForegroundColor Yellow
+Write-Host "`n[8/9] Validando Certificados..." -ForegroundColor Yellow
 
 $certs = @(Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue)
 if ($certs.Count -gt 0) {
@@ -190,6 +227,21 @@ if ($certs.Count -gt 0) {
     $certificateCheck = $true
 }
 $validationResults += $certificateCheck
+
+# ============================================================================
+# 9. VERSÃO DO WINDOWS
+# ============================================================================
+Write-Host "`n[9/9] Validando Versão do Windows..." -ForegroundColor Yellow
+
+$osVersion = [Environment]::OSVersion.Version
+$windowsCheck = if ($osVersion.Major -ge 10) {
+    Write-Host "  ✅ Windows 10/11 ou superior detectado (Build: $($osVersion.Build))" -ForegroundColor Green
+    $true
+} else {
+    Write-Host "  ❌ ERRO: Windows 10 ou superior é requerido (detectado: $osVersion)" -ForegroundColor Red
+    $false
+}
+$validationResults += $windowsCheck
 
 # ============================================================================
 # RESUMO FINAL
@@ -216,6 +268,7 @@ if ($passCount -eq $totalCount) {
     Write-Host "  Invoke-WebRequest -Uri `"`$RepositoryUrl/Install.ps1`" -OutFile `"`$env:TEMP\Install.ps1`"" -ForegroundColor Gray
     Write-Host "  & `"`$env:TEMP\Install.ps1`" -WhatIf -SkipEmailTest" -ForegroundColor Gray
     Write-Host "  & `"`$env:TEMP\Install.ps1`" -SkipEmailTest" -ForegroundColor Gray
+    Write-Host "`nRepositório: https://github.com/JulioVicente/sharepoint-version-cleanup" -ForegroundColor Cyan
     exit 0
 } else {
     Write-Host "⚠️  CORREÇÕES NECESSÁRIAS ANTES DE INSTALAR" -ForegroundColor Yellow
