@@ -8,6 +8,22 @@ Confirme `$PSVersionTable.PSVersion` (7.4+) e `Get-Module -ListAvailable PnP.Pow
 
 Valide tenant, URL, Client ID, thumbprint, expiração do certificado, consentimento e acesso ao site. Não contorne retenção, legal hold ou rótulos; trate-os com a governança do Microsoft 365.
 
+## Falha ao baixar arquivos do GitHub
+
+Se o instalador não conseguir baixar `Install.ps1`, `cleanup-versions.ps1` ou o template HTML, valide a conectividade com o host bruto do GitHub e teste o download manualmente:
+
+```powershell
+Test-NetConnection raw.githubusercontent.com -Port 443
+Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/scripts/cleanup-versions.ps1' -OutFile "$env:TEMP\cleanup-versions.ps1"
+```
+
+Quando a rede bloquear `raw.githubusercontent.com`, prefira executar a instalação a partir de um clone local do repositório para reaproveitar os arquivos já baixados:
+
+```powershell
+git clone https://github.com/JulioVicente/sharepoint-version-cleanup.git
+pwsh -NoProfile -File .\sharepoint-version-cleanup\Install.ps1
+```
+
 ## Certificado não encontrado na tarefa
 
 Execute como a identidade da tarefa:

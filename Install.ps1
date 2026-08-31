@@ -108,23 +108,51 @@ function Copy-ProjectFiles {
         $uri = "$($RepositoryRawUrl.TrimEnd('/'))/$relativePath"
         $maxRetries = 3
         $retryCount = 0
+        $backoffSeconds = 2
         $downloaded = $false
+        $lastErrorMessage = $null
 
         while (-not $downloaded -and $retryCount -lt $maxRetries) {
             try {
                 Write-Host "  Baixando: $relativePath"
-                Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $target -TimeoutSec 30 -ErrorAction Stop
+                $response = Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $target -PassThru -TimeoutSec 30 -ErrorAction Stop
+                if (-not $response) {
+                    throw "Resposta vazia ao baixar $uri."
+                }
+                if (-not ($response.PSObject.Properties.Name -contains 'StatusCode')) {
+                    throw "Nao foi possivel validar o codigo HTTP retornado por $uri."
+                }
+                $statusCode = [int]$response.StatusCode
+                if ($statusCode -ne 200) {
+                    throw "Servidor retornou HTTP $statusCode para $uri."
+                }
                 $downloaded = $true
-                Write-Host "    OK: $relativePath" -ForegroundColor Green
+                Write-Host "    OK: $relativePath (HTTP $statusCode)" -ForegroundColor Green
             } catch {
                 $retryCount++
+                $lastErrorMessage = $_.Exception.Message
+                Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
                 if ($retryCount -lt $maxRetries) {
-                    Write-Host "    AVISO: Falha na tentativa $retryCount de $maxRetries. Aguardando 5 segundos..." -ForegroundColor Yellow
-                    Start-Sleep -Seconds 5
+                    Write-Host "    AVISO: Falha na tentativa $retryCount de ${maxRetries}: $lastErrorMessage" -ForegroundColor Yellow
+                    Write-Host "    Nova tentativa em $backoffSeconds segundos..." -ForegroundColor Yellow
+                    Start-Sleep -Seconds $backoffSeconds
+                    $backoffSeconds = [Math]::Min($backoffSeconds * 2, 30)
                 } else {
-                    # Limpa arquivo parcial
-                    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-                    throw "Componente obrigatorio indisponivel apos $maxRetries tentativas: $uri. $($_.Exception.Message)"
+                    $retriesPerformed = [Math]::Max($retryCount - 1, 0)
+                    throw @"
+Componente obrigatorio indisponivel: $uri
+Tentativas totais: $retryCount de $maxRetries
+Retries executados: $retriesPerformed
+Ultimo erro: $lastErrorMessage
+
+Teste a conectividade e o download manualmente em uma sessao do PowerShell:
+  Test-NetConnection raw.githubusercontent.com -Port 443
+  Invoke-WebRequest -Uri '$uri' -OutFile '$env:TEMP\$(Split-Path -Leaf $target)'
+
+Se o acesso ao GitHub estiver bloqueado, execute o instalador a partir de um clone local do repositorio:
+  git clone https://github.com/JulioVicente/sharepoint-version-cleanup.git
+  pwsh -NoProfile -File .\Install.ps1
+"@
                 }
             }
         }
