@@ -12,7 +12,7 @@ iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-clea
 
 Esse é o comando curto, no estilo de instaladores como o OpenClaw: ele busca o lançador no GitHub e inicia o wizard. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
 
-O lançador em `main` instala componentes fixados na tag `v1.2.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
+O lançador em `main` instala componentes fixados na tag `v1.2.1` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
 
 ## Fluxo do assistente
 

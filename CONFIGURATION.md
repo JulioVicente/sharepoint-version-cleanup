@@ -253,7 +253,7 @@ A cópia externa ocorre ao final, não é transmissão contínua nem armazenamen
 
 ## Amostragem ponderada do incremental
 
-A partir de `v1.2.0`, a execução aplicada confere uma amostra dos arquivos que seriam pulados como inalterados. A conferência adicional consulta apenas o histórico; não exclui versões. Arquivos novos, alterados ou com idade de reavaliação vencida continuam seguindo a inspeção normal. A simulação já consulta os históricos e não faz esta amostragem adicional.
+A partir de `v1.2.1`, a execução aplicada confere uma amostra dos arquivos que seriam pulados como inalterados. A conferência adicional consulta apenas o histórico; não exclui versões. Arquivos novos, alterados ou com idade de reavaliação vencida continuam seguindo a inspeção normal. A simulação já consulta os históricos e não faz esta amostragem adicional.
 
 ```json
 "Sampling": {

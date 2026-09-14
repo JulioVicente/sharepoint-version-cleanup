@@ -41,7 +41,7 @@ No Agendador, desabilite e remova apenas as tarefas desta instalação. Preserve
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.2.0` por padrão. Para fixar também o lançador, troque `main` por `v1.2.0` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
+O bootstrap instala componentes da tag `v1.2.1` por padrão. Para fixar também o lançador, troque `main` por `v1.2.1` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 

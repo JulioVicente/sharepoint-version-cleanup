@@ -3,14 +3,17 @@
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
     [string]$RepositoryRawUrl,
-    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.2.0',
+    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.2.1',
     [switch]$SkipAppRegistration,
     [switch]$SkipEmailTest,
     [string]$AdminClientId
 )
 $ErrorActionPreference = 'Stop'
 if (-not $RepositoryRawUrl) { $RepositoryRawUrl = "https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/$ReleaseVersion" }
-if (-not $PSCmdlet.ShouldProcess($InstallPath, 'Preparar PowerShell, baixar e iniciar o assistente')) { return }
+# When invoked through `iwr ... | iex`, PowerShell does not create a
+# PSCmdlet object for this script block. Keep WhatIf support for file execution
+# while allowing the one-line launcher to run normally.
+if ($PSCmdlet -and -not $PSCmdlet.ShouldProcess($InstallPath, 'Preparar PowerShell, baixar e iniciar o assistente')) { return }
 if ($env:OS -ne 'Windows_NT') { throw 'Este instalador requer Windows.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
