@@ -1,44 +1,55 @@
-# Solução de problemas
+# Diagnóstico
 
-## PowerShell ou módulo
+## Dependências
 
-Confirme `$PSVersionTable.PSVersion` (7.4+) e `Get-Module -ListAvailable PnP.PowerShell`. Use `pwsh` elevado quando necessário.
+Execute `scripts/Validate-Prerequisites.ps1` no PowerShell 7. O diagnóstico é somente de leitura; não instala pacotes nem altera o sistema. Use `-SkipNetworkCheck` para verificar somente o ambiente local. O bootstrap instala PowerShell via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell. Falhas de download/importação são exibidas e interrompem a instalação.
 
-## Conexão ou acesso negado
+## JSON inválido
 
-Valide tenant, URL, Client ID, thumbprint, expiração do certificado, consentimento e acesso ao site. Não contorne retenção, legal hold ou rótulos; trate-os com a governança do Microsoft 365.
+Consulte [CONFIGURATION.md](CONFIGURATION.md). Verifique tipos, GUID, thumbprint, URLs, escopo e caminhos absolutos. Rode o validador local antes da limpeza. URLs de telas (`Forms/AllItems.aspx`) não representam a URL do site nem o caminho da biblioteca.
 
-## Certificado não encontrado na tarefa
+## Conexão e acesso negado
 
-Execute como a identidade da tarefa:
+Confirme tenant, certificado com chave privada na conta executora, consentimento `Sites.Selected` do aplicativo e concessão `Write` no site. Para configurar a concessão, use um aplicativo interativo administrativo com Microsoft Graph `Sites.FullControl.All` delegado. O aplicativo de limpeza não deve ser usado como aplicativo administrativo interativo.
 
-```powershell
-Get-ChildItem Cert:\CurrentUser\My | Select-Object Thumbprint, Subject, NotAfter
-```
-
-Um certificado de outro usuário ou apenas em `LocalMachine` não é encontrado no fluxo de `CurrentUser`.
+Políticas de retenção, hold, rótulos ou permissões podem impedir exclusões. Não contorne essas regras. O log diferencia falha de conexão, processamento e envio de email.
 
 ## Tarefa não inicia
 
-Confira histórico, usuário/senha, `pwsh.exe`, argumentos, configuração e direito de logon como tarefa em lote. Verifique também a conectividade no horário agendado.
+Confira a senha da conta (não o PIN do Windows Hello), direito de logon como tarefa em lote, certificado em `Cert:\CurrentUser\My`, acesso à rede e caminhos graváveis. O computador precisa estar ligado. Confira gatilho, fuso local e histórico do Agendador. Alterar `Schedule` no JSON não atualiza o gatilho de uma tarefa existente.
 
-## Limpeza já em execução
+## Não remove versões
 
-O lock bloqueia concorrência por site. Confirme se existe um `pwsh` ativo antes de tratar um `.lock` como órfão; a finalização normal remove o arquivo.
+Sem `-Apply`, a execução é simulação. `VersionsToKeep` preserva N versões históricas além da atual. Arquivos com apenas uma versão não têm histórico removível. Em execução incremental, arquivos sem alterações entram em `FilesUnchanged`. Confira `VersionsEligible`, `FilesSkipped` e `Warnings` no relatório.
 
-## Checkpoint ou itens ignorados
+## Lock e checkpoint
 
-O estado fica em `state\checkpoint-*.json`. Não o altere durante a execução. Arquivos em checkout e falhas individuais aparecem como ignorados no relatório.
+A existência do arquivo `.lock` é normal; somente um handle aberto bloqueia outra execução. Não apague lock durante execução. Checkpoints são separados por site, modo e pasta. Checkpoint interrompido com retenção diferente falha explicitamente: pare as tarefas, arquive esse checkpoint e simule novamente. Arquivos de checkpoint antigos `checkpoint-<site>.json` não são reutilizados pelo novo formato.
 
-## E-mail não enviado
+O inventário `inventory-*.json` acelera o modo aplicado. Para forçar um levantamento completo, pare as tarefas, arquive o inventário e checkpoint correspondentes e rode novamente. Não altere estado com uma limpeza ativa. A próxima execução completa examina itens novos/alterados.
 
-Confira servidor, porta, TLS, remetente e destinatários. A senha criptografada só funciona sob o usuário/computador originais. Se SMTP autenticado estiver bloqueado, defina `Email.Enabled` como `false` até adotar método aprovado.
+## Email
+
+SMTP precisa aceitar o transporte configurado. O cliente usa STARTTLS, e não OAuth ou TLS implícito na porta 465. A senha DPAPI só funciona na mesma conta e máquina. Use `-PreviewPath` para conferir o HTML sem envio. Uma falha SMTP durante limpeza aparece em `NotificationError`, sem substituir o resultado da operação; o relatório continua local.
 
 ## Evidências
 
-- `logs\cleanup-*.log`: transcrição
-- `logs\report-*.json`: resumo
-- `state\checkpoint-*.json`: retomada
-- Histórico do Agendador e Visualizador de Eventos: execução da tarefa
+- `logs/cleanup-*.log`: transcrição.
+- `logs/report-*.json`: escopo, contadores e erros.
+- `state/checkpoint-*.json`: progresso de execução interrompida.
+- `state/inventory-*.json`: assinaturas da última limpeza aplicada.
+- Histórico do Agendador: início, saída e credencial da tarefa.
 
-Ao compartilhar um erro, remova segredos, dados pessoais e caminhos sensíveis.
+Não compartilhe PFX, senhas ou chaves privadas. Remova dados sensíveis dos logs antes de compartilhá-los.
+
+## Idade, limites, novas tentativas e cópia externa
+
+Nenhuma versão elegível: confira quantidade preservada e idade mínima (30 dias por padrão). Para um piloto controlado com versões novas, configure idade `0`.
+
+`LimitReached` verdadeiro: execute novamente para retomar com novo limite por execução. O Agendador pode reiniciar até três vezes a cada 15 minutos.
+
+Erro parcial: consulte `Errors`, `FilesFailed`, `LibrariesFailed` e eventos `VersionDeleteFailed`/`RequestRetry`. Erros permanentes exigem correção; throttling respeita `Retry-After`. Uma resposta perdida pode ocorrer depois de a exclusão remota ter sido feita: a retomada consulta novamente o histórico.
+
+`AuditBackupError`: confira acesso da conta da tarefa a `Audit.CopyDirectory` e copie manualmente JSONL antigos pendentes. A cópia externa não reenvia arquivos de execuções anteriores.
+
+Divergência SHA256: confira origem e versão. Em desenvolvimento, regenere o manifesto após alterações. Não desative a verificação para instalar componentes divergentes.

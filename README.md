@@ -1,64 +1,75 @@
 # SharePoint Version Cleanup
 
-Automação em PowerShell para analisar e remover versões antigas de arquivos no SharePoint Online. Usa autenticação por aplicativo e certificado, checkpoints, logs e relatórios por e-mail.
+Assistente PowerShell para limpar versões antigas de arquivos no SharePoint Online. Preserva o arquivo, a versão atual e a quantidade configurada de versões históricas. Inclui simulação, relatórios, retomada e tarefas incrementais no Windows.
 
-> **Estado:** implementação funcional em validação. Faça primeiro um piloto, simule e revise o relatório antes de habilitar exclusões ou tarefas em produção.
+## Instalação em um comando
 
-## Recursos
-
-- Instalação interativa no Windows e tarefas semanais
-- Simulação sem exclusão por padrão no script de limpeza
-- Retenção configurável das versões mais recentes
-- Checkpoint e lock por site; arquivos em checkout são ignorados
-- Logs, relatório JSON e e-mail HTML opcional
-
-## Requisitos
-
-- Windows 10/11 ou Windows Server
-- PowerShell 7.4+ (`pwsh`) e privilégios de administrador local
-- PnP.PowerShell 3.0+ (o instalador pode instalá-lo)
-- Autorização para registrar/aprovar aplicativo no Microsoft Entra ID, ou aplicativo existente com certificado
-- Conectividade com Microsoft 365 e, opcionalmente, SMTP
-
-## Início seguro
-
-Baixe, inspecione e execute em uma sessão elevada do PowerShell 7:
+Abra **PowerShell como Administrador** e execute:
 
 ```powershell
-Invoke-WebRequest -Uri 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/Install.ps1' -OutFile "$env:TEMP\Install-SharePointVersionCleanup.ps1"
-Get-Content "$env:TEMP\Install-SharePointVersionCleanup.ps1"
-& "$env:TEMP\Install-SharePointVersionCleanup.ps1" -WhatIf
-& "$env:TEMP\Install-SharePointVersionCleanup.ps1"
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1')))
 ```
 
-Consulte o [guia rápido](QUICK_START.md) e os [detalhes da instalação](INSTALL_DETAILS.md).
+O comando executa o código publicado no GitHub. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
 
-## Simulação manual
+O lançador em `main` instala componentes fixados na tag `v1.1.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
+
+## Fluxo do assistente
+
+1. Verifica Windows, administrador, PowerShell e PnP.PowerShell.
+2. Pergunta tenant, sites, biblioteca/pasta, retenção, aplicativo/certificado, SMTP opcional e horário.
+3. Executa uma simulação e mostra arquivos, versões elegíveis e espaço estimado.
+4. Solicita aprovação para aplicar o piloto; mostra o resultado real.
+5. Solicita aprovação para agendar o escopo em produção. Escopos não aprovados ficam em simulação.
+
+O acesso administrativo, consentimentos e políticas do tenant precisam permitir o registro e as operações. O assistente valida os dados e a execução, mas não contorna permissões ou retenção.
+
+## Execução simples, sem JSON
+
+Depois de instalar as dependências, em PowerShell 7:
+
+```powershell
+.\scripts\cleanup-versions.ps1 `
+  -SiteUrl 'https://empresa.sharepoint.com' `
+  -Directory '/teste03' `
+  -Tenant 'empresa.onmicrosoft.com' `
+  -ClientId '11111111-1111-1111-1111-111111111111' `
+  -CertificateThumbprint '0123456789ABCDEF0123456789ABCDEF01234567' `
+  -VersionsToKeep 2 `
+  -OutputDirectory 'C:\SPCleanup'
+```
+
+Os identificadores são exemplos. `-Directory` é um alias para `-FolderServerRelativeUrl`: indica a biblioteca/pasta **no SharePoint**. `-OutputDirectory` indica onde guardar logs e estado **localmente**. Sem ele, usa `.spvc` no diretório de trabalho. Adicione `-Apply` somente para efetivar a exclusão. A simulação é o padrão.
+
+## Execução com JSON
 
 ```powershell
 $root = "$env:ProgramData\SharePointVersionCleanup"
-& "$root\scripts\cleanup-versions.ps1" -ConfigPath "$root\config\config.json" -SiteUrl 'https://contoso.sharepoint.com/sites/Piloto'
+& "$root\scripts\cleanup-versions.ps1" `
+  -ConfigPath "$root\config\config.json" `
+  -SiteUrl 'https://empresa.sharepoint.com'
 ```
 
-Depois de conferir os logs, repita com `-Apply` apenas no piloto. As tarefas instaladas começam em simulação; use `scripts/Enable-Production.ps1` somente após validar o piloto aplicado.
+A pasta configurada em `FolderScopes` é usada automaticamente. A tarefa agendada chama o mesmo script. O modo aplicado usa inventário persistente para evitar consultar histórico de arquivos sem alteração; não é um serviço residente nem elimina a enumeração de itens.
 
-## Segurança e limitações
+## Documentação
 
-- Não versione `config.json`, certificados, logs ou checkpoints.
-- A senha SMTP usa DPAPI e só funciona para o mesmo usuário no mesmo computador; SMTP autenticado pode estar desabilitado.
-- O registro solicita `Sites.Selected` e concede `Write` somente aos sites informados. Revise periodicamente essas concessões.
-- Checkout é detectado; presença ativa de usuários, retenção e rótulos de conformidade não são avaliados previamente. O SharePoint pode bloquear exclusões.
-- Versões excluídas não devem ser tratadas como recuperáveis. Garanta retenção, backup e aprovação operacional.
+- [Guia rápido](QUICK_START.md): comando único, wizard, piloto e CLI.
+- [Referência completa do JSON](CONFIGURATION.md): campos, tipos, exemplos, escopo e operação.
+- [Detalhes da instalação](INSTALL_DETAILS.md): dependências, credenciais, atualização e rollback.
+- [Diagnóstico](TROUBLESHOOTING.md): falhas e recuperação.
+- [Testes](tests/README.md): suíte local sem operações no tenant.
+- [Exemplo JSON](config/config.example.json) e [licença MIT](LICENSE).
 
-## Estrutura e documentação
+Versões antigas são excluídas permanentemente. Arquivos com checkout ou sinais de conformidade são ignorados; outras políticas podem bloquear a operação. Relatórios indicam o que foi simulado, excluído, ignorado e o que falhou.
 
-- [QUICK_START.md](QUICK_START.md): instalação e piloto
-- [INSTALL_DETAILS.md](INSTALL_DETAILS.md): arquitetura, configuração e operação
-- [TROUBLESHOOTING.md](TROUBLESHOOTING.md): diagnóstico
-- [config/config.example.json](config/config.example.json): exemplo sem segredos
-- `Install.ps1`, `scripts/cleanup-versions.ps1`, `scripts/Send-EmailReport.ps1`
-- `templates/email-template.html`
-- [LICENSE](LICENSE): licença MIT
+## Limites e auditoria diária
 
-**Versão:** 1.0.0 (pré-produção)
-**Última atualização:** agosto de 2026
+O padrão protege versões com menos de 30 dias e limita a 1000 exclusões por execução. Ajuste `Safety` no JSON ou `-MinimumVersionAgeDays` e `-MaxVersionsPerRun` na CLI direta. Para um piloto com versões criadas agora, escolha explicitamente idade mínima `0`.
+
+```powershell
+.\scripts\Get-DailyAudit.ps1 -ConfigPath 'C:\ProgramData\SharePointVersionCleanup\config\config.json' `
+  -Date '2026-09-13' -OutputCsv 'C:\Relatorios\auditoria.csv'
+```
+
+A auditoria identifica diretório, arquivo, versão, regra aplicada e resultado de cada alteração. Falhas por arquivo/biblioteca permitem continuar os demais e retomar pendências. Consulte a [referência completa](CONFIGURATION.md) para interpretar os eventos e configurar cópia externa.

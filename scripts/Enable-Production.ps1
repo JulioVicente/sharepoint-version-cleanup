@@ -1,46 +1,55 @@
 #requires -Version 7.4
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess)]
 param(
-    [Parameter(Mandatory = $true)][string]$ConfigPath,
-    [Parameter(Mandatory = $true)][string]$PilotSiteUrl,
-    [Parameter(Mandatory = $true)][ValidateSet('ATIVAR PRODUCAO')][string]$Confirmation,
-    [int]$MaximumPilotAgeDays = 7
+    [Parameter(Mandatory)][string]$ConfigPath,
+    [Parameter(Mandatory)][string]$PilotSiteUrl,
+    [Parameter(Mandatory)][string[]]$TaskName,
+    [string]$PilotFolderServerRelativeUrl = '',
+    [Parameter(Mandatory)][ValidateSet('ATIVAR PRODUCAO')][string]$Confirmation,
+    [ValidateRange(1,30)][int]$MaximumPilotAgeDays = 7
 )
-
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$taskPrefix = 'SharePoint Version Cleanup'
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-
+. (Join-Path $PSScriptRoot 'Configuration.ps1')
+$config = Read-CleanupConfiguration $ConfigPath
+$PilotSiteUrl = ConvertTo-SiteUrl $PilotSiteUrl
+if ($PilotSiteUrl -notin $config.Sites) { throw 'Site piloto nao cadastrado.' }
+$now = (Get-Date).ToUniversalTime()
 $pilot = Get-ChildItem -LiteralPath $config.Paths.Logs -Filter 'report-*.json' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending |
-    ForEach-Object {
-        try { Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json } catch { $null }
-    } |
-    Where-Object {
-        $_ -and $_.SiteUrl -eq $PilotSiteUrl -and $_.Success -and $_.Apply -and
-        ([datetime]$_.FinishedAt).ToUniversalTime() -ge (Get-Date).ToUniversalTime().AddDays(-$MaximumPilotAgeDays)
-    } |
-    Select-Object -First 1
-
-if (-not $pilot) {
-    throw "Nenhum piloto aplicado com sucesso para $PilotSiteUrl nos ultimos $MaximumPilotAgeDays dias."
+    Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
+        try {
+            $r = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -AsHashtable
+            if ($r.SiteUrl -eq $PilotSiteUrl -and $r.Success -eq $true -and $r.Apply -eq $true -and
+                $r.VersionsToKeep -eq $config.VersionsToKeep -and $r.FilesProcessed -gt 0 -and
+                $r.VersionsDeleted -gt 0 -and $r.FilesSkipped -eq 0 -and
+                $r.FolderServerRelativeUrl -eq $PilotFolderServerRelativeUrl.TrimEnd('/') -and
+                ([datetime]$r.FinishedAt).ToUniversalTime() -ge $now.AddDays(-$MaximumPilotAgeDays) -and
+                ([datetime]$r.FinishedAt).ToUniversalTime() -le $now) { $r }
+        } catch { Write-Verbose "Relatorio invalido ignorado: $($_.Exception.Message)" }
+    } | Select-Object -First 1
+if (-not $pilot) { throw 'Nenhum piloto aplicado recente com exclusoes e sem falhas no mesmo site, pasta e retencao.' }
+# Validate every target before changing any task. Never promote other sites by prefix.
+$updates = foreach ($name in ($TaskName | Select-Object -Unique)) {
+    if ($name -notmatch '^SharePoint Version Cleanup - \d+$') { throw "Nome de tarefa invalido: $name" }
+    $task = Get-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction Stop
+    if (@($task.Actions).Count -ne 1) { throw "Acoes inesperadas: $name" }
+    $action = $task.Actions[0]
+    $base = Split-Path (Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent) -Parent
+    $cleanup = Join-Path $base 'scripts\cleanup-versions.ps1'
+    $expected = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanup`" -ConfigPath `"$([IO.Path]::GetFullPath($ConfigPath))`" -SiteUrl `"$PilotSiteUrl`""
+    if ($PilotFolderServerRelativeUrl) { $expected += " -FolderServerRelativeUrl `"$($PilotFolderServerRelativeUrl.TrimEnd('/'))`"" }
+    if ([IO.Path]::GetFileName($action.Execute) -ne 'pwsh.exe' -or
+        ($action.Arguments -ne $expected -and $action.Arguments -ne "$expected -Apply")) {
+        throw "A tarefa '$name' nao corresponde exatamente ao escopo validado no piloto."
+    }
+    @{ Task = $task; Execute = $action.Execute; Arguments = "$expected -Apply" }
 }
-
-$tasks = @(Get-ScheduledTask -TaskName "$taskPrefix - *" -ErrorAction SilentlyContinue)
-if ($tasks.Count -eq 0) { throw "Nenhuma tarefa com prefixo '$taskPrefix' foi encontrada." }
-
-foreach ($task in $tasks) {
-    $actions = @($task.Actions)
-    if ($actions.Count -ne 1) { throw "A tarefa '$($task.TaskName)' possui uma configuracao de acoes inesperada." }
-    $action = $actions[0]
-    $arguments = [string]$action.Arguments
-    if ($arguments -notmatch '(?i)(^|\s)-Apply(\s|$)') { $arguments = "$arguments -Apply" }
-    $newAction = New-ScheduledTaskAction -Execute $action.Execute -Argument $arguments -WorkingDirectory $action.WorkingDirectory
-    if ($PSCmdlet.ShouldProcess($task.TaskName, 'Habilitar exclusao de versoes em producao')) {
-        Set-ScheduledTask -TaskName $task.TaskName -Action $newAction | Out-Null
+$count = 0
+foreach ($update in $updates) {
+    if ($PSCmdlet.ShouldProcess($update.Task.TaskName, 'Habilitar exclusao no escopo validado')) {
+        $action = New-ScheduledTaskAction -Execute $update.Execute -Argument $update.Arguments
+        Set-ScheduledTask -TaskName $update.Task.TaskName -TaskPath '\' -Action $action | Out-Null
+        $count++
     }
 }
-
-Write-Host "$($tasks.Count) tarefa(s) promovida(s) para producao." -ForegroundColor Green
-
+Write-Host "$count tarefa(s) promovida(s)."

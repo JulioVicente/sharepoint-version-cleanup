@@ -1,14 +1,14 @@
-# Testes automatizados
+# Testes
 
-Os testes usam Pester e mocks para não acessar SharePoint nem enviar e-mail.
+Execute em PowerShell 7.4+ com Pester 5.7.1 ou superior:
 
 ```powershell
-Invoke-Pester -Path ./tests
+Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser
+.\tests\Run-Tests.ps1
+# Alternativa com módulo isolado:
+.\tests\Run-Tests.ps1 -PesterPath '<caminho>\Pester.psd1'
 ```
 
-Recomenda-se Pester 5. O ambiente também pode executar a suíte com Pester 3.4.
+A suíte usa mocks para SharePoint, SMTP e Agendador. Não exclui versões reais nem comprova permissões no tenant. A validação integrada exige piloto com aplicativo/certificado e escopo dedicado. O runner desativa TestRegistry, pois os testes não precisam alterar o registro.
 
-O caminho de envio habilitado não é exercitado porque `Send-EmailReport.ps1` instancia
-`System.Net.Mail.SmtpClient` diretamente. Para testar assunto, destinatários, corpo e
-anexos sem rede, extraia o envio para uma função ou adaptador injetável e faça mock
-dessa fronteira.
+Após editar arquivos distribuídos, normalize para LF conforme `.gitattributes` e execute `tools/Update-ReleaseManifest.ps1` antes dos testes de cópia do instalador.

@@ -1,32 +1,48 @@
-# Detalhes da instalação
+# Instalação e operação
 
-## Parâmetros
+## Componentes e requisitos
 
-Use `Get-Help .\Install.ps1 -Detailed`.
+`bootstrap.ps1` é o ponto de entrada para o comando remoto e funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4+ ou instala a versão estável pelo WinGet, verificando o código de saída. Sem WinGet, apresenta o endereço oficial para instalação manual. Em seguida inicia `Install.ps1` em PowerShell 7. O instalador requer administrador e instala/atualiza PnP.PowerShell 3.0+ para todos os usuários, verificando a importação.
 
-- `-InstallPath`: destino; padrão `%ProgramData%\SharePointVersionCleanup`.
-- `-SkipAppRegistration`: solicita Client ID e thumbprint existentes.
-- `-SkipEmailTest`: não envia a validação SMTP.
-- `-WhatIf`: mostra operações compatíveis com `ShouldProcess`; revise todas as interações exibidas.
+Os scripts de operação exigem PowerShell 7.4+ e PnP.PowerShell. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
-O instalador exige Windows, administrador e PowerShell 7.4+. Ele valida o PnP.PowerShell, copia arquivos, coleta a configuração, registra ou referencia o aplicativo e cria tarefas semanais.
+## Parâmetros do instalador e bootstrap
 
-## Configuração
+| Parâmetro | Uso |
+|---|---|
+| `InstallPath` | Pasta dedicada, padrão `%ProgramData%\SharePointVersionCleanup`. Não use a raiz do disco nem a pasta do código-fonte. |
+| `RepositoryRawUrl` | URL raw de uma revisão/pasta do repositório. Em produção, pode ser fixada num commit revisado para obter componentes da mesma revisão. |
+| `SkipAppRegistration` | Reutiliza Client ID e certificado; as concessões existentes devem ser válidas. |
+| `AdminClientId` | Aplicativo interativo administrativo usado para conceder acesso por site. Não é o aplicativo de limpeza. |
+| `SkipEmailTest` | Pula o envio SMTP de teste; não valida entrega de emails. |
+| `WhatIf` | Sem efeitos colaterais: não instala, baixa, escreve, registra ou agenda. |
 
-O arquivo gerado é `config\config.json`; veja [config/config.example.json](config/config.example.json). `Tenant`, `Sites`, `VersionsToKeep`, `Authentication` e `Paths` são consumidos pela limpeza. `Email` é opcional. A senha SMTP criada pelo instalador usa DPAPI: não pode ser copiada entre usuários ou computadores.
+O instalador copia scripts, template, exemplo JSON e documentação operacional. `Install.ps1` é o assistente principal; `bootstrap.ps1` é o lançador. Não existem mais dois arquivos diferenciados somente por maiúsculas/minúsculas.
 
-## Autenticação e permissões
+## Fluxo e aprovações
 
-O registro solicita `Sites.Selected` e o instalador concede `Write` apenas aos sites configurados. Use aplicativo dedicado, revise as concessões, controle o acesso à chave privada e monitore a validade do certificado.
+O wizard valida dados, registra/reutiliza aplicativo, grava configuração, valida certificado e executa simulação real do escopo. Solicita aprovação antes do piloto aplicado e novamente para agendar exclusões. O cadastro das tarefas usa a identidade atual, senha fornecida ao Agendador e nível elevado. Escopos sem aprovação continuam em simulação.
 
-## Fluxo da limpeza
+A operação agendada é uma tarefa do Windows, não um serviço residente. Há uma tarefa por site, diária ou semanal, com limite de 12 horas e bloqueio de múltiplas instâncias. O lock adicional é por site e diretório de estado. Consulte a [referência do JSON](CONFIGURATION.md) para detalhes de incremental e retomada.
 
-O script obtém lock por site, conecta por certificado, enumera bibliotecas e arquivos, ignora checkout, preserva `VersionsToKeep`, e só exclui com `-Apply`. Ele grava checkpoint, log e JSON e envia e-mail quando habilitado. Retenção, legal hold, rótulos e permissões podem bloquear operações.
+## Atualização e falhas
 
-## Tarefas agendadas
+Pause tarefas existentes e aguarde as execuções terminarem antes de atualizar. Execute o bootstrap do novo código. O wizard recolhe a configuração novamente; guarde uma cópia da anterior para consulta. A instalação faz backup dos arquivos gerenciados e das tarefas que substituir. Em falha, tenta restaurar esses arquivos e tarefas, preservando outros arquivos do diretório. Não apaga recursivamente toda a instalação.
 
-O instalador distribui sites entre segunda e sexta às 10:00 e cria as tarefas sem `-Apply`. Faça o piloto manual e use `scripts/Enable-Production.ps1` para promovê-las após um piloto aplicado recente. Confira identidade, certificado, `pwsh.exe`, argumentos, caminhos graváveis, janela operacional e alertas.
+Registro Entra, certificado exportado, módulo instalado e exclusões de versões já aplicadas não são revertidos pelo rollback local. Se houver falha posterior ao piloto, consulte os relatórios antes de repetir. Tarefas antigas além da quantidade configurada não são removidas automaticamente: revise e desabilite as excedentes.
+
+As permissões Microsoft 365 dependem do administrador: o assistente não pode conceder privilégios que a conta autenticada não possui. A leitura bem-sucedida não comprova permissão para excluir; o piloto aplicado é a validação dessa etapa.
 
 ## Desinstalação
 
-Desabilite e remova somente tarefas com prefixo `SharePoint Version Cleanup`, preserve evidências necessárias e depois remova o diretório instalado. Aplicativo Entra, consentimentos e certificado são removidos separadamente, após confirmar que não têm outros consumidores.
+No Agendador, desabilite e remova apenas as tarefas desta instalação. Preserve relatórios exigidos pela operação e remova os arquivos locais quando não forem necessários. Aplicativos Entra, concessões e certificados exigem remoção administrativa separada, depois de confirmar que não têm outros consumidores. Nunca use o procedimento de desinstalação para apagar arquivos ou versões no SharePoint.
+
+## Versão e integridade
+
+O bootstrap instala componentes da tag `v1.1.0` por padrão. Para fixar também o lançador, troque `main` por `v1.1.0` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
+
+A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
+
+Após mudanças no checkout, normalize os arquivos para LF conforme `.gitattributes` e execute `tools/Update-ReleaseManifest.ps1` antes dos testes e da publicação.
+
+O Agendador faz até três reinícios separados por 15 minutos após erro, inclusive para retomar trabalho que atingiu o limite de exclusões por execução. Esse limite não é diário.

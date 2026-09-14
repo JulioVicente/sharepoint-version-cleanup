@@ -1,38 +1,94 @@
 # Guia rápido
 
-Use um site SharePoint de teste com arquivos descartáveis e várias versões. Abra o PowerShell 7.4+ como administrador e confirme `$PSVersionTable.PSVersion`.
+## Iniciar pelo GitHub
 
-## Instalar
-
-Na raiz do projeto:
+Em Windows PowerShell 5.1 ou PowerShell 7, **como Administrador**:
 
 ```powershell
-pwsh -NoProfile -File .\Install.ps1 -WhatIf
-pwsh -NoProfile -File .\Install.ps1
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1')))
 ```
 
-Para informar Client ID e certificado existentes, use `-SkipAppRegistration`. O destino padrão é `%ProgramData%\SharePointVersionCleanup`.
+Para baixar, inspecionar e simular o instalador primeiro:
 
-O instalador solicitará tenant, URL administrativa, sites, número de versões a manter e SMTP opcional.
+```powershell
+$bootstrap = Join-Path $env:TEMP 'spvc-bootstrap.ps1'
+Invoke-WebRequest 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1' -OutFile $bootstrap
+Get-Content $bootstrap
+& $bootstrap -WhatIf
+& $bootstrap
+```
 
-## Conferir antes do piloto
+`-WhatIf` descreve a instalação sem baixar componentes, instalar pacotes, solicitar credenciais ou criar tarefas. Em um clone do projeto, execute `& .\bootstrap.ps1` para usar os arquivos locais.
 
-1. Revise as permissões e o consentimento do aplicativo.
-2. Valide URLs e `VersionsToKeep` em `config\config.json`.
-3. Confirme no Agendador que as tarefas `SharePoint Version Cleanup` estão em simulação, sem `-Apply`.
-4. Não compartilhe configuração, certificados, logs ou checkpoints.
+## Responder ao wizard
 
-## Simular e aplicar
+Tenha o domínio do tenant e a URL do site. Para uma biblioteca em `https://empresa.sharepoint.com/teste03/Forms/AllItems.aspx`, informe:
+
+| Pergunta | Resposta |
+|---|---|
+| URL do site | `https://empresa.sharepoint.com` |
+| Limitar a biblioteca/pasta | `S` |
+| Caminho completo no servidor | `/teste03` |
+| Versões históricas a manter | `2` no piloto, ou o valor aprovado pela operação |
+
+O assistente valida os valores e pede correção de entradas inválidas. Ele permite reutilizar um aplicativo/certificado ou registrá-los. Para conceder `Sites.Selected`, precisa de uma sessão administrativa com aplicativo interativo apropriado; o assistente oferece registrar esse aplicativo ou pede seu Client ID. A criação exige permissões e consentimento do tenant.
+
+O assistente pergunta sobre SMTP e agendamento diário/semanal. Depois solicita a simulação, mostra o resumo e pede aprovação para aplicar o piloto. Somente depois do resultado aplicado com exclusões, sem arquivos ignorados, solicita ativar as tarefas em produção. Se não houver histórico excedente, crie versões em um arquivo descartável do piloto; não será possível comprovar exclusões usando apenas arquivos com uma versão.
+
+A credencial do Agendador deve ser da mesma conta que possui o certificado e a senha SMTP protegida. Informe a senha da conta, não o PIN do Windows Hello. O computador precisa permanecer ligado e conectado nos horários previstos; execuções perdidas iniciam quando possível.
+
+## Executar sem configuração JSON
+
+```powershell
+.\scripts\cleanup-versions.ps1 -SiteUrl 'https://empresa.sharepoint.com' `
+  -Directory '/teste03' -Tenant 'empresa.onmicrosoft.com' `
+  -ClientId '11111111-1111-1111-1111-111111111111' `
+  -CertificateThumbprint '0123456789ABCDEF0123456789ABCDEF01234567' `
+  -VersionsToKeep 2 -OutputDirectory 'C:\SPCleanup'
+```
+
+Substitua os identificadores de exemplo. O modo direto exige escopo e certificado; não envia email nem cria tarefas. Rode em uma pasta local gravável; sem `-OutputDirectory`, logs e estado ficam em `.spvc`. Repita com `-Apply` para efetivar após revisar o relatório. `-PassThru` retorna o objeto de relatório para automação.
+
+## Executar um piloto com JSON
 
 ```powershell
 $root = "$env:ProgramData\SharePointVersionCleanup"
-& "$root\scripts\cleanup-versions.ps1" -ConfigPath "$root\config\config.json" -SiteUrl 'https://contoso.sharepoint.com/sites/Piloto'
+& "$root\scripts\Invoke-Pilot.ps1" -ConfigPath "$root\config\config.json" `
+  -SiteUrl 'https://empresa.sharepoint.com' -FolderServerRelativeUrl '/teste03'
 ```
 
-Confira `report-*.json` e o log em `$root\logs`. Na simulação, `VersionsDeleted` indica o que seria removido. Após revisar:
+Depois de revisar os resultados:
 
 ```powershell
-& "$root\scripts\cleanup-versions.ps1" -ConfigPath "$root\config\config.json" -SiteUrl 'https://contoso.sharepoint.com/sites/Piloto' -Apply
+& "$root\scripts\Invoke-Pilot.ps1" -ConfigPath "$root\config\config.json" `
+  -SiteUrl 'https://empresa.sharepoint.com' -FolderServerRelativeUrl '/teste03' `
+  -Apply -Confirmation 'APLICAR NO SITE PILOTO'
 ```
 
-Valide o resultado no SharePoint e só então habilite tarefas gradualmente. Em caso de falha, consulte [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+Um piloto de pasta só autoriza promover tarefas daquele mesmo escopo:
+
+```powershell
+& "$root\scripts\Enable-Production.ps1" -ConfigPath "$root\config\config.json" `
+  -PilotSiteUrl 'https://empresa.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' `
+  -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' -WhatIf
+```
+
+Remova `-WhatIf` para promover após verificar. O script exige relatório aplicado recente, com exclusões e sem ignorados, e valida os argumentos da tarefa. Não promove automaticamente os demais sites.
+
+## Ler os resultados
+
+No resumo e no `report-*.json`:
+
+- `VersionsEligible`: versões que atendem ao critério de retenção.
+- `VersionsDeleted`: exclusões efetivas; zero na simulação.
+- `BytesEligible` e `BytesFreed`: tamanhos elegíveis e removidos reportados pelo provedor.
+- `FilesUnchanged`: arquivos reaproveitados pelo inventário incremental no modo aplicado.
+- `FilesSkipped`, `Warnings`, `Error`: proteção, checkout ou falhas.
+
+Consulte [CONFIGURATION.md](CONFIGURATION.md) antes de alterar escopo, retenção ou estado. Em falhas, veja [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+
+## Versões recentes e auditoria
+
+Para versões recém-criadas no piloto, selecione idade mínima `0` no wizard ou configure `Safety.MinimumVersionAgeDays` no JSON. O padrão é 30 dias. Na CLI sem JSON, use `-MinimumVersionAgeDays 0`. `Safety.MaxVersionsPerRun` limita cada execução, inclusive as retomadas agendadas.
+
+Consulte o dia com `scripts/Get-DailyAudit.ps1 -ConfigPath <arquivo> -Date AAAA-MM-DD -OutputCsv <destino.csv>`. A [referência JSON](CONFIGURATION.md) explica simulação, sucesso, falhas e pendências.

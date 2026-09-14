@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
     [Parameter(Mandatory = $true, ParameterSetName = 'Report')][string]$ReportPath,
-    [Parameter(Mandatory = $true, ParameterSetName = 'Test')][switch]$Test
+    [Parameter(Mandatory = $true, ParameterSetName = 'Test')][switch]$Test,
+    [string]$PreviewPath
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +16,7 @@ if ($Test) {
     $report = [pscustomobject]@{
         Success = $true; SiteUrl = 'Teste de configuracao'; Apply = $false
         FilesProcessed = 0; VersionsDeleted = 0; BytesFreed = 0
+        VersionsEligible = 0; BytesEligible = 0; FolderServerRelativeUrl = ''; FilesUnchanged = 0
         FilesSkipped = 0; Warnings = @(); Error = $null; LogPath = $null
         StartedAt = Get-Date; FinishedAt = Get-Date
     }
@@ -32,6 +34,10 @@ $warningText = if (@($report.Warnings).Count) {
 $values = @{
     STATUS = $status; COLOR = $color
     SITE = [Net.WebUtility]::HtmlEncode([string]$report.SiteUrl)
+    FOLDER = [Net.WebUtility]::HtmlEncode([string]$report.FolderServerRelativeUrl)
+    UNCHANGED = [string]$report.FilesUnchanged
+    ELIGIBLE = [string]$report.VersionsEligible
+    ESTIMATED = ('{0:N2} GB' -f ([double]$report.BytesEligible / 1GB))
     MODE = $(if ($report.Apply) { 'Aplicacao' } else { 'Simulacao' })
     FILES = [string]$report.FilesProcessed; DELETED = [string]$report.VersionsDeleted
     FREED = ('{0:N2} GB' -f ([double]$report.BytesFreed / 1GB))
@@ -40,6 +46,11 @@ $values = @{
     FINISHED = ([datetime]$report.FinishedAt).ToString('dd/MM/yyyy HH:mm:ss')
 }
 foreach ($key in $values.Keys) { $template = $template.Replace("{{$key}}", $values[$key]) }
+
+if ($PreviewPath) {
+    $template | Set-Content -LiteralPath $PreviewPath -Encoding utf8
+    return
+}
 
 $message = [Net.Mail.MailMessage]::new()
 $client = [Net.Mail.SmtpClient]::new([string]$config.Email.SmtpServer, [int]$config.Email.Port)
@@ -63,4 +74,3 @@ try {
     $message.Dispose()
     $client.Dispose()
 }
-

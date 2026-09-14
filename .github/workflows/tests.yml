@@ -1,0 +1,27 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify release manifest
+        shell: pwsh
+        run: |
+          $manifest = Get-Content release-manifest.json -Raw | ConvertFrom-Json -AsHashtable
+          foreach ($path in $manifest.Files.Keys) {
+            if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $manifest.Files[$path]) {
+              throw "SHA256 mismatch: $path"
+            }
+          }
+      - name: Install test dependency
+        shell: pwsh
+        run: Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser -TrustRepository -Quiet
+      - name: Run unit tests
+        shell: pwsh
+        run: ./tests/Run-Tests.ps1

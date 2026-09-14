@@ -1,18 +1,55 @@
 #requires -Version 7.4
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Config')]
 param(
-    [Parameter(Mandatory = $true)][string]$ConfigPath,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Config')][string]$ConfigPath,
     [Parameter(Mandatory = $true)][string]$SiteUrl,
-    [switch]$Apply
+    [switch]$Apply,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Direct')]
+    [Parameter(ParameterSetName = 'Config')][Alias('Directory')][string]$FolderServerRelativeUrl,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$Tenant,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$ClientId,
+    [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$CertificateThumbprint,
+    [Parameter(ParameterSetName = 'Direct')][ValidateRange(1,2147483647)][int]$VersionsToKeep = 10,
+    [Parameter(ParameterSetName = 'Direct')][ValidateRange(1,1000000)][int]$MaxVersionsPerRun = 1000,
+    [Parameter(ParameterSetName = 'Direct')][ValidateRange(0,36500)][int]$MinimumVersionAgeDays = 30,
+    [Parameter(ParameterSetName = 'Direct')][string]$OutputDirectory = (Join-Path (Get-Location) '.spvc'),
+    [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $startedAt = Get-Date
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+. (Join-Path $PSScriptRoot 'Configuration.ps1')
+. (Join-Path $PSScriptRoot 'Resilience.ps1')
+$config = if ($PSCmdlet.ParameterSetName -eq 'Direct') {
+    $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
+    Read-CleanupConfiguration -Values @{
+        Tenant = $Tenant; Sites = @($SiteUrl); VersionsToKeep = $VersionsToKeep
+        Authentication = @{ ClientId = $ClientId; CertificateThumbprint = $CertificateThumbprint }
+        Paths = @{ Logs = (Join-Path $outputRoot 'logs'); State = (Join-Path $outputRoot 'state') }
+        Email = @{ Enabled = $false }
+        Safety = @{ MaxVersionsPerRun = $MaxVersionsPerRun; MinimumVersionAgeDays = $MinimumVersionAgeDays }
+    }
+} else { Read-CleanupConfiguration $ConfigPath }
+$SiteUrl = ConvertTo-SiteUrl $SiteUrl
+if ($SiteUrl -notin $config.Sites) { throw 'SiteUrl deve estar cadastrado em Sites na configuracao.' }
+$scopeFolder = ''
+if (-not $FolderServerRelativeUrl -and $config.FolderScopes[$SiteUrl]) { $FolderServerRelativeUrl = $config.FolderScopes[$SiteUrl] }
+if ($FolderServerRelativeUrl) {
+    $scopeFolder = ConvertTo-CleanupFolder $FolderServerRelativeUrl $SiteUrl
+}
+if ($config.FolderScopes[$SiteUrl] -and $scopeFolder -ne $config.FolderScopes[$SiteUrl]) {
+    throw 'O escopo solicitado difere da pasta autorizada na configuracao.'
+}
+$runId = $startedAt.ToString('yyyyMMdd-HHmmss-fffffff') + '-' + [guid]::NewGuid().ToString('N').Substring(0,8)
 $siteKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($SiteUrl))).Substring(0, 16)
-$logPath = Join-Path $config.Paths.Logs "cleanup-$siteKey-$($startedAt.ToString('yyyyMMdd-HHmmss')).log"
-$checkpointPath = Join-Path $config.Paths.State "checkpoint-$siteKey.json"
+$logPath = Join-Path $config.Paths.Logs "cleanup-$siteKey-$runId.log"
+$mode = if ($Apply) { 'apply' } else { 'simulation' }
+$scopeKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($scopeFolder.ToLowerInvariant()))).Substring(0, 8)
+$checkpointPath = Join-Path $config.Paths.State "checkpoint-$siteKey-$mode-$scopeKey.json"
+$inventoryPath = Join-Path $config.Paths.State "inventory-$siteKey-$scopeKey.json"
+$policyKey = "$($config.VersionsToKeep)|$($config.Safety.MinimumVersionAgeDays)"
+$ageCutoff = $startedAt.ToUniversalTime().AddDays(-$config.Safety.MinimumVersionAgeDays)
 $lockPath = Join-Path $config.Paths.State "cleanup-$siteKey.lock"
 New-Item -ItemType Directory -Force -Path $config.Paths.Logs, $config.Paths.State | Out-Null
 
@@ -20,115 +57,265 @@ $lock = $null
 $transcriptStarted = $false
 $report = [ordered]@{
     Success = $false; SiteUrl = $SiteUrl; StartedAt = $startedAt; FinishedAt = $null
-    Apply = [bool]$Apply; FilesProcessed = 0; VersionsDeleted = 0; BytesFreed = 0
+    Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep; FilesProcessed = 0; VersionsDeleted = 0; BytesFreed = 0
+    VersionsEligible = 0; BytesEligible = 0; NotificationError = $null
+    FolderServerRelativeUrl = $scopeFolder
+    FilesUnchanged = 0; ReportPath = (Join-Path $config.Paths.Logs "report-$siteKey-$runId.json")
     FilesSkipped = 0; Warnings = [Collections.Generic.List[string]]::new(); Error = $null; LogPath = $logPath
+    AuditPaths = [Collections.Generic.List[string]]::new()
+    FilesFailed = 0; LibrariesFailed = 0; Errors = [Collections.Generic.List[string]]::new()
+    LimitReached = $false; AuditBackupError = $null; PolicyKey = $policyKey; MaxVersionsPerRun = $config.Safety.MaxVersionsPerRun
 }
 
+function Write-AuditEvent {
+    param([string]$Event, [string]$Outcome, [string]$FileUrl = '', [string]$VersionId = '',
+        [string]$Reason = '', [string]$ErrorMessage = '', [hashtable]$Details = @{})
+    $now = [DateTimeOffset]::Now
+    $path = Join-Path $config.Paths.Logs "audit-$($now.ToString('yyyyMMdd'))-$siteKey-$runId.jsonl"
+    $record = [ordered]@{
+        Timestamp = $now.ToString('o'); RunId = $runId; SiteUrl = $SiteUrl
+        FolderServerRelativeUrl = $scopeFolder; Mode = $mode; Event = $Event; Outcome = $Outcome
+        FileUrl = $FileUrl; VersionId = $VersionId; Reason = $Reason; Error = $ErrorMessage
+        VersionsToKeep = $config.VersionsToKeep; Details = $Details
+    }
+    $line = $record | ConvertTo-Json -Depth 8 -Compress
+    [IO.File]::AppendAllText($path, $line + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+    if (-not $report.AuditPaths.Contains($path)) { $report.AuditPaths.Add($path) }
+}
+
+function Invoke-PnPRequest {
+    param([scriptblock]$Operation)
+    Invoke-WithRetry -Operation $Operation -Settings $config.Retry -OnRetry {
+        param($retry)
+        Write-AuditEvent -Event 'RequestRetry' -Outcome 'Retrying' -ErrorMessage $retry.Error -Details $retry
+        Write-Warning "Falha temporaria; nova tentativa $($retry.Attempt) em $($retry.DelaySeconds) segundos."
+    }
+}
 function Save-Checkpoint([string]$FileUrl) {
-    # O cursor so e avancado depois que o arquivo inteiro termina com sucesso.
-    @{ SiteUrl = $SiteUrl; LastSuccessfulFileUrl = $FileUrl; UpdatedAt = (Get-Date).ToString('o') } |
-        ConvertTo-Json | Set-Content -LiteralPath $checkpointPath -Encoding utf8
+    # Atomic replacement prevents truncated state after interruption.
+    $completed.Add($FileUrl) | Out-Null
+    @{ SiteUrl = $SiteUrl; Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep
+        PolicyKey = $policyKey
+        CompletedFiles = @($completed); UpdatedAt = (Get-Date).ToString('o') } |
+        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "$checkpointPath.tmp" -Encoding utf8
+    [IO.File]::Move("$checkpointPath.tmp", $checkpointPath, $true)
+}
+
+function Save-Inventory {
+    @{ VersionsToKeep = $config.VersionsToKeep; PolicyKey = $policyKey; Files = $inventory } | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath "$inventoryPath.tmp" -Encoding utf8
+    [IO.File]::Move("$inventoryPath.tmp", $inventoryPath, $true)
 }
 
 try {
-    $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
+    try { $lock = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None') }
+    catch [IO.IOException] { throw "Nao foi possivel adquirir o lock; outra limpeza pode estar em execucao para este site. $($_.Exception.Message)" }
+    Write-AuditEvent -Event 'RunStarted' -Outcome 'Started' -Reason 'Preservar arquivo atual e N versoes historicas; excluir somente excedentes com Apply.' -Details @{
+        Computer = [Environment]::MachineName; User = [Environment]::UserName
+        ScriptSha256 = (Get-FileHash -LiteralPath $PSCommandPath -Algorithm SHA256).Hash
+    }
     Start-Transcript -LiteralPath $logPath -Append | Out-Null
     $transcriptStarted = $true
     Import-Module PnP.PowerShell -MinimumVersion 3.0.0
 
     Write-Host "Conectando a $SiteUrl"
-    $connection = Connect-PnPOnline -Url $SiteUrl -ClientId $config.Authentication.ClientId `
-        -Tenant $config.Tenant -Thumbprint $config.Authentication.CertificateThumbprint -ReturnConnection
-
-    $resumeAfter = $null
-    if (Test-Path -LiteralPath $checkpointPath) {
-        $savedCheckpoint = Get-Content -LiteralPath $checkpointPath -Raw | ConvertFrom-Json
-        $resumeAfter = if ($savedCheckpoint.PSObject.Properties.Name -contains 'LastSuccessfulFileUrl') {
-            $savedCheckpoint.LastSuccessfulFileUrl
-        } else { $savedCheckpoint.LastFileUrl }
+    $connection = Invoke-PnPRequest { Connect-PnPOnline -Url $SiteUrl -ClientId $config.Authentication.ClientId `
+        -Tenant $config.Tenant -Thumbprint $config.Authentication.CertificateThumbprint -ReturnConnection }
+    if ($scopeFolder) {
+        $null = Invoke-PnPRequest { Get-PnPFolder -Url $scopeFolder -Connection $connection -ErrorAction Stop }
     }
-    $resumeReached = [string]::IsNullOrWhiteSpace($resumeAfter)
-    $libraries = Get-PnPList -Connection $connection | Where-Object {
+
+    $completed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $inventory = @{}
+    if ($Apply -and (Test-Path -LiteralPath $inventoryPath)) {
+        $savedInventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable
+        if ($savedInventory.PolicyKey -eq $policyKey -and $savedInventory.Files -is [Collections.IDictionary]) {
+            $inventory = $savedInventory.Files
+        }
+    }
+    if (Test-Path -LiteralPath $checkpointPath) {
+        $savedCheckpoint = Get-Content -LiteralPath $checkpointPath -Raw | ConvertFrom-Json -AsHashtable
+        if ($savedCheckpoint.SiteUrl -ne $SiteUrl -or $savedCheckpoint.Apply -ne [bool]$Apply -or
+            $savedCheckpoint.VersionsToKeep -ne $config.VersionsToKeep -or -not $savedCheckpoint.ContainsKey('CompletedFiles')) {
+            throw 'Checkpoint incompativel com o site, modo ou retencao atual. Arquive-o antes de reiniciar.'
+        }
+        if ($savedCheckpoint.ContainsKey('PolicyKey') -and $savedCheckpoint.PolicyKey -ne $policyKey) { throw 'Checkpoint incompativel com a politica de idade/retencao.' }
+        foreach ($url in $savedCheckpoint.CompletedFiles) { $completed.Add([string]$url) | Out-Null }
+    }
+    $scannedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    $libraries = Invoke-PnPRequest { Get-PnPList -Includes RootFolder,IsCatalog -Connection $connection } | Where-Object {
         $_.BaseTemplate -eq 101 -and -not $_.Hidden -and -not $_.IsCatalog
     }
 
-    foreach ($library in $libraries) {
+    :libraryLoop foreach ($library in $libraries) {
+        try {
+        $libraryRoot = if ($library.PSObject.Properties.Name -contains 'RootFolder') { [string]$library.RootFolder.ServerRelativeUrl } else { '' }
+        if ($scopeFolder -and $libraryRoot -and $scopeFolder -ne $libraryRoot -and
+            -not $scopeFolder.StartsWith("$libraryRoot/", [StringComparison]::OrdinalIgnoreCase)) {
+            Write-AuditEvent -Event 'LibrarySkipped' -Outcome 'Skipped' -FileUrl $libraryRoot -Reason 'Biblioteca fora do escopo configurado.'
+            continue
+        }
         Write-Host "Biblioteca: $($library.Title)"
-        $items = Get-PnPListItem -List $library.Id -PageSize 500 -Fields 'FileRef','FileLeafRef','FSObjType','_ComplianceTag','_ComplianceFlags' -Connection $connection
+        Write-AuditEvent -Event 'LibraryScanned' -Outcome 'Started' -FileUrl $libraryRoot -Details @{ Library = $library.Title; LibraryId = [string]$library.Id }
+        $items = Invoke-PnPRequest { Get-PnPListItem -List $library.Id -PageSize 500 -Fields 'FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags' -Connection $connection }
         foreach ($item in $items) {
-            if ([int]$item['FSObjType'] -ne 0) { continue }
             $fileUrl = [string]$item['FileRef']
-            if (-not $resumeReached) {
-                if ($fileUrl -eq $resumeAfter) { $resumeReached = $true }
+            if ($scopeFolder -and -not $fileUrl.StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $directory = if ([int]$item['FSObjType'] -ne 0) { $fileUrl } else { $fileUrl.Substring(0, $fileUrl.LastIndexOf('/')) }
+            if ($scannedDirectories.Add($directory)) { Write-AuditEvent -Event 'DirectoryScanned' -Outcome 'Success' -FileUrl $directory }
+            if ([int]$item['FSObjType'] -ne 0) { continue }
+            if ($completed.Contains($fileUrl)) {
+                Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Concluido anteriormente neste checkpoint.'
                 continue
             }
 
             try {
                 $complianceTag = [string]$item['_ComplianceTag']
                 $complianceFlags = [string]$item['_ComplianceFlags']
-                if (-not [string]::IsNullOrWhiteSpace($complianceTag) -or -not [string]::IsNullOrWhiteSpace($complianceFlags)) {
+                if (-not [string]::IsNullOrWhiteSpace($complianceTag) -or
+                    (-not [string]::IsNullOrWhiteSpace($complianceFlags) -and $complianceFlags -ne '0')) {
                     $report.FilesSkipped++
                     $report.Warnings.Add("Arquivo protegido por rotulo/politica de conformidade ignorado: $fileUrl")
+                    Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Rotulo ou flags de conformidade.'
                     Save-Checkpoint $fileUrl
                     continue
                 }
-                $file = Get-PnPFile -Url $fileUrl -AsFileObject -Connection $connection
-                Get-PnPProperty -ClientObject $file -Property CheckOutType -Connection $connection | Out-Null
+                $file = Invoke-PnPRequest { Get-PnPFile -Url $fileUrl -AsFileObject -Connection $connection }
+                Invoke-PnPRequest { Get-PnPProperty -ClientObject $file -Property CheckOutType -Connection $connection } | Out-Null
                 if ([string]$file.CheckOutType -ne 'None') {
                     $report.FilesSkipped++
                     $report.Warnings.Add("Arquivo em checkout ignorado: $fileUrl")
+                    Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Arquivo em checkout.'
                     Save-Checkpoint $fileUrl
                     continue
                 }
 
-                $versions = @(Get-PnPFileVersion -Url $fileUrl -Connection $connection | Sort-Object Created -Descending)
-                $obsolete = @($versions | Select-Object -Skip ([int]$config.VersionsToKeep))
+                # A persistent signature avoids rereading version history for unchanged files.
+                # Missing metadata means process normally, never assume unchanged.
+                $signature = ''
+                if ($item['Modified'] -and $item['UniqueId'] -and $item['_UIVersionString']) {
+                    $signature = "$($item['UniqueId'])|$(([datetime]$item['Modified']).ToUniversalTime().ToString('o'))|$($item['_UIVersionString'])"
+                }
+                if ($Apply -and $signature -and $inventory[$fileUrl] -and $inventory[$fileUrl].Signature -eq $signature -and
+                    (-not $inventory[$fileUrl].RecheckAt -or [datetime]$inventory[$fileUrl].RecheckAt -gt $startedAt.ToUniversalTime())) {
+                    $report.FilesUnchanged++
+                    Write-AuditEvent -Event 'FileUnchanged' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'UniqueId, Modified e versao atual iguais ao inventario aplicado.'
+                    Save-Checkpoint $fileUrl
+                    continue
+                }
+
+                # Keep N historical versions in addition to the current version.
+                $versions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $fileUrl -Connection $connection } |
+                    Where-Object { -not ($_.PSObject.Properties.Name -contains 'IsCurrentVersion' -and $_.IsCurrentVersion) } |
+                    Sort-Object Created, Id -Descending)
+                $excess = @($versions | Select-Object -Skip ([int]$config.VersionsToKeep))
+                $obsolete = @($excess | Where-Object { ([datetime]$_.Created).ToUniversalTime() -le $ageCutoff })
+                $tooRecent = @($excess | Where-Object { ([datetime]$_.Created).ToUniversalTime() -gt $ageCutoff })
+                Write-AuditEvent -Event 'RetentionDecision' -Outcome 'Success' -FileUrl $fileUrl `
+                    -Reason 'Preservar atual e N historicas; excluir excedentes somente depois da idade minima.' `
+                    -Details @{ HistoricalCount = $versions.Count; EligibleCount = $obsolete.Count
+                        KeptVersionIds = @($versions | Select-Object -First ([int]$config.VersionsToKeep) | ForEach-Object { [string]$_.Id })
+                        EligibleVersionIds = @($obsolete | ForEach-Object { [string]$_.Id }); CurrentVersionPreserved = $true; MinimumVersionAgeDays = $config.Safety.MinimumVersionAgeDays; DeferredVersionIds = @($tooRecent | ForEach-Object { [string]$_.Id }) }
                 foreach ($version in $obsolete) {
                     $size = if ($version.PSObject.Properties.Name -contains 'Size') { [long]$version.Size } else { 0L }
+                    $report.VersionsEligible++
+                    $report.BytesEligible += $size
                     if ($Apply) {
-                        Remove-PnPFileVersion -Url $fileUrl -Identity $version.Id -Force -Connection $connection
+                        if ($report.VersionsDeleted -ge $config.Safety.MaxVersionsPerRun) {
+                            $report.LimitReached = $true
+                            Write-AuditEvent -Event 'RunLimitReached' -Outcome 'Deferred' -FileUrl $fileUrl -Reason 'Teto de exclusoes por execucao; retomar os pendentes em nova execucao.'
+                            break libraryLoop
+                        }
+                        Write-AuditEvent -Event 'VersionDeleteRequested' -Outcome 'Started' -FileUrl $fileUrl -VersionId $version.Id -Reason 'Versao excede a retencao historica.' -Details @{ Bytes = $size }
+                        try { Invoke-PnPRequest { Remove-PnPFileVersion -Url $fileUrl -Identity $version.Id -Force -Connection $connection } | Out-Null }
+                        catch {
+                            Write-AuditEvent -Event 'VersionDeleteFailed' -Outcome 'Failed' -FileUrl $fileUrl -VersionId $version.Id -ErrorMessage $_.Exception.Message
+                            throw
+                        }
+                        $report.VersionsDeleted++
+                        $report.BytesFreed += $size
+                        Write-AuditEvent -Event 'VersionDeleted' -Outcome 'Success' -FileUrl $fileUrl -VersionId $version.Id -Details @{ Bytes = $size }
+                    } else {
+                        Write-AuditEvent -Event 'VersionWouldDelete' -Outcome 'Simulated' -FileUrl $fileUrl -VersionId $version.Id -Reason 'Excede a retencao; Apply ausente.' -Details @{ Bytes = $size }
                     }
-                    $report.VersionsDeleted++
-                    $report.BytesFreed += $size
                 }
                 $report.FilesProcessed++
+                Write-AuditEvent -Event 'FileCompleted' -Outcome 'Success' -FileUrl $fileUrl -Details @{ EligibleCount = $obsolete.Count; ContentModified = $false }
+                if ($Apply -and $signature) {
+                    $recheckAt = if ($tooRecent.Count) {
+                        (($tooRecent | Sort-Object Created | Select-Object -First 1).Created.ToUniversalTime().AddDays($config.Safety.MinimumVersionAgeDays)).ToString('o')
+                    } else { $null }
+                    $inventory[$fileUrl] = @{ Signature = $signature; RecheckAt = $recheckAt }
+                    Save-Inventory
+                }
                 Save-Checkpoint $fileUrl
             } catch {
                 $report.FilesSkipped++
+                $report.FilesFailed++
                 $report.Warnings.Add("$fileUrl`: $($_.Exception.Message)")
-                # Interromper preserva o ultimo cursor bem-sucedido. Assim este
-                # arquivo sera tentado novamente, em vez de ser perdido no checkpoint.
-                throw "Falha ao processar $fileUrl; checkpoint preservado para nova tentativa. $($_.Exception.Message)"
+                $report.Errors.Add("$fileUrl`: $($_.Exception.Message)")
+                try { Write-AuditEvent -Event 'FileFailed' -Outcome 'Failed' -FileUrl $fileUrl -ErrorMessage $_.Exception.Message } catch { Write-Warning 'Falha ao gravar auditoria do erro.' }
+                # Only successful files enter the checkpoint; later files can continue.
+                continue
             }
+        }
+        } catch {
+            $report.LibrariesFailed++
+            $report.Errors.Add("Biblioteca $($library.Title): $($_.Exception.Message)")
+            try { Write-AuditEvent -Event 'LibraryFailed' -Outcome 'Failed' -ErrorMessage $_.Exception.Message -Details @{ Library = $library.Title } }
+            catch { Write-Warning 'Falha ao gravar auditoria da biblioteca.' }
+            continue
         }
     }
 
-    if (-not $resumeReached) {
-        throw "O arquivo salvo no checkpoint nao foi encontrado: $resumeAfter. O checkpoint foi preservado para revisao manual."
+    if ($report.LimitReached) { throw 'Limite de exclusoes atingido; progresso preservado para nova execucao.' }
+    if ($report.Errors.Count) {
+        throw "Execucao parcial; itens com falha serao tentados novamente. $($report.Errors -join '; ')"
     }
-
     $report.Success = $true
     Remove-Item -LiteralPath $checkpointPath -Force -ErrorAction SilentlyContinue
-} catch [IO.IOException] {
-    $report.Error = 'Ja existe uma limpeza em execucao para este site.'
-    throw $report.Error
 } catch {
     $report.Error = $_.Exception.Message
     throw
 } finally {
     $report.FinishedAt = Get-Date
-    if ($transcriptStarted) { Stop-Transcript | Out-Null }
-    if ($lock) { $lock.Dispose() }
-    Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
+    if ($transcriptStarted) { try { Stop-Transcript | Out-Null } catch { Write-Warning $_.Exception.Message } }
+    # Keep the lock file: unlinking it after release races with the next process.
 
-    $reportPath = Join-Path $config.Paths.Logs "report-$siteKey-$($startedAt.ToString('yyyyMMdd-HHmmss')).json"
+    $reportPath = Join-Path $config.Paths.Logs "report-$siteKey-$runId.json"
+    try {
+    Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } else { 'Failed' }) -ErrorMessage $report.Error `
+        -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesSkipped = $report.FilesSkipped
+            VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted }
+    if ($config.Audit.CopyDirectory) {
+        try {
+            New-Item -ItemType Directory -Path $config.Audit.CopyDirectory -Force | Out-Null
+            foreach ($auditPath in $report.AuditPaths) { Copy-Item -LiteralPath $auditPath -Destination $config.Audit.CopyDirectory -Force }
+        } catch {
+            $report.AuditBackupError = $_.Exception.Message
+            Write-AuditEvent -Event 'AuditCopyFailed' -Outcome 'Failed' -ErrorMessage $_.Exception.Message
+            Write-Warning "Copia externa da auditoria falhou: $($_.Exception.Message)"
+        }
+    }
     $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
     if ($config.Email.Enabled) {
         $emailScript = Join-Path (Split-Path -Parent $PSCommandPath) 'Send-EmailReport.ps1'
-        & $emailScript -ConfigPath $ConfigPath -ReportPath $reportPath
+        try { & $emailScript -ConfigPath $ConfigPath -ReportPath $reportPath }
+        catch {
+            $report.NotificationError = $_.Exception.Message
+            $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
+            Write-Warning "Falha no email; consulte o relatorio local: $($_.Exception.Message)"
+        }
     }
+    } finally { if ($lock) { $lock.Dispose() } }
 }
 
 if (-not $Apply) {
     Write-Warning 'Simulacao concluida. Nenhuma versao foi removida. Use -Apply para efetivar.'
+}
+if ($PassThru) { [pscustomobject]$report }
+else {
+    Write-Host "Arquivos: $($report.FilesProcessed); sem alteracao: $($report.FilesUnchanged); ignorados: $($report.FilesSkipped)"
+    Write-Host "Versoes elegiveis: $($report.VersionsEligible); excluidas: $($report.VersionsDeleted)"
+    Write-Host "Relatorio: $($report.ReportPath)"
 }

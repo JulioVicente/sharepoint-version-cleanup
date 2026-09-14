@@ -1,31 +1,48 @@
 {
-  "SchemaVersion": 1,
+  "SchemaVersion": 2,
   "Tenant": "contoso.onmicrosoft.com",
   "AdminUrl": "https://contoso-admin.sharepoint.com",
   "Sites": [
-    "https://contoso.sharepoint.com/sites/projecta",
-    "https://contoso.sharepoint.com/sites/projectb"
+    "https://contoso.sharepoint.com/sites/piloto"
   ],
+  "FolderScopes": {
+    "https://contoso.sharepoint.com/sites/piloto": "/sites/piloto/Documentos Compartilhados/Teste"
+  },
   "VersionsToKeep": 10,
   "Authentication": {
-    "ClientId": "00000000-0000-0000-0000-000000000000",
+    "ClientId": "11111111-1111-1111-1111-111111111111",
     "CertificateThumbprint": "0123456789ABCDEF0123456789ABCDEF01234567"
   },
   "Email": {
-    "Enabled": true,
-    "SmtpServer": "smtp.office365.com",
+    "Enabled": false,
+    "SmtpServer": "smtp.example.com",
     "Port": 587,
     "UseSsl": true,
-    "From": "noreply@contoso.com",
+    "From": "relatorios@contoso.com",
     "To": [
-      "admin@contoso.com",
-      "manager@contoso.com"
+      "operacao@contoso.com"
     ],
-    "UserName": "noreply@contoso.com",
+    "UserName": "",
     "EncryptedPassword": null
+  },
+  "Schedule": {
+    "Frequency": "semanal",
+    "Time": "22:00"
   },
   "Paths": {
     "State": "C:\\ProgramData\\SharePointVersionCleanup\\state",
     "Logs": "C:\\ProgramData\\SharePointVersionCleanup\\logs"
+  },
+  "Safety": {
+    "MaxVersionsPerRun": 1000,
+    "MinimumVersionAgeDays": 30
+  },
+  "Retry": {
+    "MaxDelaySeconds": 60,
+    "MaxRetries": 3,
+    "BaseDelaySeconds": 2
+  },
+  "Audit": {
+    "CopyDirectory": ""
   }
 }

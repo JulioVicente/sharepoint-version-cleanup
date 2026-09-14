@@ -11,3 +11,7 @@ state/
 .idea/
 .DS_Store
 Thumbs.db
+
+.test-tools/
+.spvc/
+TestResults*.xml
