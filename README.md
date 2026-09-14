@@ -7,10 +7,10 @@ Assistente PowerShell para limpar versões antigas de arquivos no SharePoint Onl
 Abra **PowerShell como Administrador** e execute:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1')))
+iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex
 ```
 
-O comando executa o código publicado no GitHub. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
+Esse é o comando curto, no estilo de instaladores como o OpenClaw: ele busca o lançador no GitHub e inicia o wizard. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
 
 O lançador em `main` instala componentes fixados na tag `v1.2.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
 

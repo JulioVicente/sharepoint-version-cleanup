@@ -5,8 +5,10 @@
 Em Windows PowerShell 5.1 ou PowerShell 7, **como Administrador**:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1')))
+iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex
 ```
+
+O comando acima é o instalador de uma linha. Ele baixa somente o lançador; o lançador verifica a versão fixada dos componentes e os hashes antes de iniciar o assistente.
 
 Para baixar, inspecionar e simular o instalador primeiro:
 
