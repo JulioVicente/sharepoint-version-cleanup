@@ -37,5 +37,8 @@ if ($OutputCsv) {
     FileFailures = @($events | Where-Object Event -eq 'FileFailed').Count
     LibraryFailures = @($events | Where-Object Event -eq 'LibraryFailed').Count
     FilesWithVersionsDeleted = @($events | Where-Object Event -eq 'VersionDeleted' | Select-Object SiteUrl,FileUrl -Unique).Count
+    SamplesInspected = @($events | Where-Object Event -eq 'SampleInspected').Count
+    SampleDiscrepancies = @($events | Where-Object { $_.Event -eq 'SampleInspected' -and $_.Outcome -eq 'Discrepancy' }).Count
+    SamplesFailed = @($events | Where-Object Event -eq 'SampleFailed').Count
     OutputCsv = $OutputCsv
 }

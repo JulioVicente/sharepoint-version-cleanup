@@ -12,7 +12,7 @@ Abra **PowerShell como Administrador** e execute:
 
 O comando executa o código publicado no GitHub. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
 
-O lançador em `main` instala componentes fixados na tag `v1.1.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
+O lançador em `main` instala componentes fixados na tag `v1.2.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
 
 ## Fluxo do assistente
 
@@ -73,3 +73,7 @@ O padrão protege versões com menos de 30 dias e limita a 1000 exclusões por e
 ```
 
 A auditoria identifica diretório, arquivo, versão, regra aplicada e resultado de cada alteração. Falhas por arquivo/biblioteca permitem continuar os demais e retomar pendências. Consulte a [referência completa](CONFIGURATION.md) para interpretar os eventos e configurar cópia externa.
+
+## Conferência por sorteio
+
+O incremental inclui amostragem ponderada de arquivos inalterados: maiores e modificados recentemente têm mais chance, sem eliminar os pequenos ou antigos. O padrão confere um arquivo por biblioteca e guarda o ciclo para evitar repetições. Essa consulta é somente leitura; divergências ficam registradas para reavaliação na próxima execução. Configure `Sampling` no [JSON](CONFIGURATION.md#amostragem-ponderada-do-incremental), ou use `-SamplesPerLibrary` na CLI direta.

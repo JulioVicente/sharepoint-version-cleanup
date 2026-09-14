@@ -33,6 +33,12 @@ Describe 'Installer' {
         $n | Should -Be 3
         Should -Invoke Read-Host -Times 2
     }
+    It 'permite deixar opcao de auditoria vazia no wizard' {
+        Mock Read-Host { '' }
+        $value = Read-Validated -Prompt 'Auditoria opcional' -AllowEmpty -Validate { param($v) $v }
+        $value | Should -BeNullOrEmpty
+        Should -Invoke Read-Host -Times 1
+    }
     It 'resposta N retorna falso e nao aprova a exclusao' {
         Mock Read-Host { 'N' }
         Read-YesNo 'Aplicar?' | Should -BeFalse

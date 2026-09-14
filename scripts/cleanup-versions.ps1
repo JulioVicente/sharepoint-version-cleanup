@@ -12,6 +12,7 @@ param(
     [Parameter(ParameterSetName = 'Direct')][ValidateRange(1,2147483647)][int]$VersionsToKeep = 10,
     [Parameter(ParameterSetName = 'Direct')][ValidateRange(1,1000000)][int]$MaxVersionsPerRun = 1000,
     [Parameter(ParameterSetName = 'Direct')][ValidateRange(0,36500)][int]$MinimumVersionAgeDays = 30,
+    [Parameter(ParameterSetName = 'Direct')][ValidateRange(0,1000)][int]$SamplesPerLibrary = 1,
     [Parameter(ParameterSetName = 'Direct')][string]$OutputDirectory = (Join-Path (Get-Location) '.spvc'),
     [switch]$PassThru
 )
@@ -21,6 +22,7 @@ $ErrorActionPreference = 'Stop'
 $startedAt = Get-Date
 . (Join-Path $PSScriptRoot 'Configuration.ps1')
 . (Join-Path $PSScriptRoot 'Resilience.ps1')
+. (Join-Path $PSScriptRoot 'Sampling.ps1')
 $config = if ($PSCmdlet.ParameterSetName -eq 'Direct') {
     $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
     Read-CleanupConfiguration -Values @{
@@ -29,6 +31,7 @@ $config = if ($PSCmdlet.ParameterSetName -eq 'Direct') {
         Paths = @{ Logs = (Join-Path $outputRoot 'logs'); State = (Join-Path $outputRoot 'state') }
         Email = @{ Enabled = $false }
         Safety = @{ MaxVersionsPerRun = $MaxVersionsPerRun; MinimumVersionAgeDays = $MinimumVersionAgeDays }
+        Sampling = @{ Enabled = ($SamplesPerLibrary -gt 0); SamplesPerLibrary = [math]::Max(1,$SamplesPerLibrary) }
     }
 } else { Read-CleanupConfiguration $ConfigPath }
 $SiteUrl = ConvertTo-SiteUrl $SiteUrl
@@ -64,6 +67,7 @@ $report = [ordered]@{
     FilesSkipped = 0; Warnings = [Collections.Generic.List[string]]::new(); Error = $null; LogPath = $logPath
     AuditPaths = [Collections.Generic.List[string]]::new()
     FilesFailed = 0; LibrariesFailed = 0; Errors = [Collections.Generic.List[string]]::new()
+    SamplesInspected = 0; SampleDiscrepancies = 0; SamplesFailed = 0
     LimitReached = $false; AuditBackupError = $null; PolicyKey = $policyKey; MaxVersionsPerRun = $config.Safety.MaxVersionsPerRun
 }
 
@@ -93,7 +97,7 @@ function Invoke-PnPRequest {
 }
 function Save-Checkpoint([string]$FileUrl) {
     # Atomic replacement prevents truncated state after interruption.
-    $completed.Add($FileUrl) | Out-Null
+    if ($FileUrl) { $completed.Add($FileUrl) | Out-Null }
     @{ SiteUrl = $SiteUrl; Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep
         PolicyKey = $policyKey
         CompletedFiles = @($completed); UpdatedAt = (Get-Date).ToString('o') } |
@@ -157,7 +161,8 @@ try {
         }
         Write-Host "Biblioteca: $($library.Title)"
         Write-AuditEvent -Event 'LibraryScanned' -Outcome 'Started' -FileUrl $libraryRoot -Details @{ Library = $library.Title; LibraryId = [string]$library.Id }
-        $items = Invoke-PnPRequest { Get-PnPListItem -List $library.Id -PageSize 500 -Fields 'FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags' -Connection $connection }
+        $sampleCandidates = [Collections.Generic.List[object]]::new()
+        $items = Invoke-PnPRequest { Get-PnPListItem -List $library.Id -PageSize 500 -Fields 'FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size' -Connection $connection }
         foreach ($item in $items) {
             $fileUrl = [string]$item['FileRef']
             if ($scopeFolder -and -not $fileUrl.StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -199,6 +204,7 @@ try {
                 if ($Apply -and $signature -and $inventory[$fileUrl] -and $inventory[$fileUrl].Signature -eq $signature -and
                     (-not $inventory[$fileUrl].RecheckAt -or [datetime]$inventory[$fileUrl].RecheckAt -gt $startedAt.ToUniversalTime())) {
                     $report.FilesUnchanged++
+                    if ($config.Sampling.Enabled) { $sampleCandidates.Add($item) }
                     Write-AuditEvent -Event 'FileUnchanged' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'UniqueId, Modified e versao atual iguais ao inventario aplicado.'
                     Save-Checkpoint $fileUrl
                     continue
@@ -257,6 +263,54 @@ try {
                 try { Write-AuditEvent -Event 'FileFailed' -Outcome 'Failed' -FileUrl $fileUrl -ErrorMessage $_.Exception.Message } catch { Write-Warning 'Falha ao gravar auditoria do erro.' }
                 # Only successful files enter the checkpoint; later files can continue.
                 continue
+            }
+        }
+        if ($sampleCandidates.Count) {
+            $libraryKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$library.Id))).Substring(0,16)
+            $samplePath = Join-Path $config.Paths.State "sampling-$siteKey-$scopeKey-$libraryKey.json"
+            $sampleState = @{ CycleId = [guid]::NewGuid().ToString('N'); CompletedIds = @() }
+            if (Test-Path -LiteralPath $samplePath) {
+                $sampleState = Get-Content -LiteralPath $samplePath -Raw | ConvertFrom-Json -AsHashtable
+                if (-not $sampleState.CycleId -or -not $sampleState.ContainsKey('CompletedIds')) { throw 'Estado da amostragem invalido.' }
+            }
+            $samples = @(Select-WeightedSample -Items $sampleCandidates.ToArray() -Settings $config.Sampling -State $sampleState -Now $startedAt)
+            foreach ($sample in $samples) {
+                $sampleUrl = [string]$sample.Item['FileRef']
+                try {
+                    Write-AuditEvent -Event 'SampleSelected' -Outcome 'Started' -FileUrl $sampleUrl `
+                        -Reason 'Sorteio ponderado entre arquivos inalterados; tamanho e modificacao recente aumentam o peso.' `
+                        -Details @{ CycleId=$sample.CycleId; Weight=$sample.Factors.Weight; SizeBytes=$sample.Factors.SizeBytes
+                            SizeKnown=$sample.Factors.SizeKnown; AgeDays=$sample.Factors.AgeDays; CandidateCount=$sample.CandidateCount
+                            FirstDrawProbability=$sample.FirstDrawProbability; ReadOnly=$true; SizeWeight=$config.Sampling.SizeWeight; RecencyWeight=$config.Sampling.RecencyWeight; RecencyHalfLifeDays=$config.Sampling.RecencyHalfLifeDays }
+                    $sampleVersions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $sampleUrl -Connection $connection } |
+                        Where-Object { -not ($_.PSObject.Properties.Name -contains 'IsCurrentVersion' -and $_.IsCurrentVersion) } |
+                        Sort-Object Created,Id -Descending)
+                    $sampleEligible = @($sampleVersions | Select-Object -Skip $config.VersionsToKeep |
+                        Where-Object { ([datetime]$_.Created).ToUniversalTime() -le $ageCutoff })
+                    if ($sampleEligible.Count) {
+                        $report.SampleDiscrepancies++
+                        $report.Warnings.Add("Amostragem encontrou versoes elegiveis em arquivo inalterado: $sampleUrl. Reavaliacao na proxima execucao.")
+                        $inventory.Remove($sampleUrl)
+                        Save-Inventory
+                        $null = $completed.Remove($sampleUrl)
+                        Save-Checkpoint ''
+                    }
+                    Write-AuditEvent -Event 'SampleInspected' -Outcome $(if ($sampleEligible.Count) { 'Discrepancy' } else { 'Success' }) -FileUrl $sampleUrl `
+                        -Reason $(if ($sampleEligible.Count) { 'Inventario invalidado para reavaliacao na proxima execucao.' } else { 'Nenhuma versao elegivel segundo a politica atual.' }) `
+                        -Details @{ CycleId=$sample.CycleId; HistoricalCount=$sampleVersions.Count; EligibleCount=$sampleEligible.Count; ReadOnly=$true }
+                    $sampleState.CompletedIds = @($sampleState.CompletedIds) + @($sample.Id)
+                    $sampleState | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath "$samplePath.tmp" -Encoding utf8
+                    [IO.File]::Move("$samplePath.tmp",$samplePath,$true)
+                    $report.SamplesInspected++
+                } catch {
+                    $report.SamplesFailed++
+                    $report.Errors.Add("Amostragem $sampleUrl`: $($_.Exception.Message)")
+                    Write-AuditEvent -Event 'SampleFailed' -Outcome 'Failed' -FileUrl $sampleUrl -ErrorMessage $_.Exception.Message
+                    $inventory.Remove($sampleUrl)
+                    Save-Inventory
+                    $null = $completed.Remove($sampleUrl)
+                    Save-Checkpoint ''
+                }
             }
         }
         } catch {

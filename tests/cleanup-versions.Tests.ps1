@@ -17,6 +17,7 @@ Describe 'cleanup-versions.ps1' {
             Authentication = @{ ClientId = '11111111-1111-1111-1111-111111111111'; CertificateThumbprint = '0123456789ABCDEF0123456789ABCDEF01234567' }
             Paths = @{ Logs = $logs; State = $state }
             Email = @{ Enabled = $false }
+            Sampling = @{ Enabled = $false }
         } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding utf8
 
         # Declara os comandos para que esta suite rode mesmo sem PnP.PowerShell instalado.
@@ -289,6 +290,67 @@ Describe 'cleanup-versions.ps1' {
         (Get-FileHash $r.AuditPaths[0]).Hash | Should -Be (Get-FileHash (Join-Path $cfg.Audit.CopyDirectory (Split-Path $r.AuditPaths[0] -Leaf))).Hash
     }
 
+    It 'confere inalterado por amostragem sem excluir e reavalia divergencia na proxima execucao' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Sampling = @{Enabled=$true;SamplesPerLibrary=1}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0';File_x0020_Size=1MB} }
+        Mock Get-PnPFileVersion { @() }
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        Mock Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $r.SamplesInspected | Should -Be 1
+        $r.SampleDiscrepancies | Should -Be 1
+        $r.VersionsDeleted | Should -Be 0
+        Assert-MockCalled Remove-PnPFileVersion 0 -Scope It
+        $events = Get-Content $r.AuditPaths | ForEach-Object { $_ | ConvertFrom-Json }
+        ($events | Where-Object Event -eq 'SampleSelected').Details.ReadOnly | Should -BeTrue
+        ($events | Where-Object Event -eq 'SampleInspected').Outcome | Should -Be 'Discrepancy'
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $r.FilesProcessed | Should -Be 1
+        $r.VersionsDeleted | Should -Be 2
+    }
+
+    It 'falha na amostragem deixa arquivo pendente para retomada completa' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Sampling = @{Enabled=$true}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'} }
+        Mock Get-PnPFileVersion { @() }
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        Mock Get-PnPFileVersion { throw 'falha na conferencia' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*falha na conferencia*'
+        $cp = Get-Content (Get-ChildItem $state -Filter 'checkpoint-*.json').FullName -Raw | ConvertFrom-Json
+        @($cp.CompletedFiles) | Should -Not -Contain '/docs/a.docx'
+        Mock Get-PnPFileVersion { @() }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $r.FilesProcessed | Should -Be 1
+    }
+    It 'persiste sorteio sem repeticao e respeita fronteira de pasta e subpastas' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Sampling = @{Enabled=$true;SamplesPerLibrary=1}
+        $cfg.FolderScopes = @{'https://contoso.sharepoint.com/sites/test'='/sites/test/docs'}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/sites/test/docs/a';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0';File_x0020_Size=1MB},
+            @{FSObjType=0;FileRef='/sites/test/docs/sub/b';Modified=[datetime]'2026-09-02';UniqueId='b';_UIVersionString='5.0';File_x0020_Size=1GB},
+            @{FSObjType=0;FileRef='/sites/test/docs-outro/c';Modified=[datetime]'2026-09-03';UniqueId='c';_UIVersionString='5.0';File_x0020_Size=10GB}
+        ) }
+        Mock Get-PnPFileVersion { @() }
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $first = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $second = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $first.SamplesInspected | Should -Be 1
+        $second.SamplesInspected | Should -Be 1
+        $one = Get-Content $first.AuditPaths | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object Event -eq 'SampleSelected'
+        $two = Get-Content $second.AuditPaths | ForEach-Object { $_ | ConvertFrom-Json } | Where-Object Event -eq 'SampleSelected'
+        $one.FileUrl | Should -Not -Be $two.FileUrl
+        $one.Details.CycleId | Should -Be $two.Details.CycleId
+        Assert-MockCalled Get-PnPFileVersion 0 -Scope It -ParameterFilter { $Url -like '*docs-outro*' }
+        Assert-MockCalled Remove-PnPFileVersion 0 -Scope It
+        $daily = & (Join-Path $PSScriptRoot '../scripts/Get-DailyAudit.ps1') -LogsPath $logs
+        $daily.SamplesInspected | Should -Be 2
+    }
     It 'continua outra biblioteca quando a enumeracao de uma falha' {
         Mock Get-PnPList { @(
             [pscustomobject]@{Id='bad';Title='Bad';BaseTemplate=101;Hidden=$false;IsCatalog=$false},

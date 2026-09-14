@@ -92,3 +92,7 @@ Consulte [CONFIGURATION.md](CONFIGURATION.md) antes de alterar escopo, retençã
 Para versões recém-criadas no piloto, selecione idade mínima `0` no wizard ou configure `Safety.MinimumVersionAgeDays` no JSON. O padrão é 30 dias. Na CLI sem JSON, use `-MinimumVersionAgeDays 0`. `Safety.MaxVersionsPerRun` limita cada execução, inclusive as retomadas agendadas.
 
 Consulte o dia com `scripts/Get-DailyAudit.ps1 -ConfigPath <arquivo> -Date AAAA-MM-DD -OutputCsv <destino.csv>`. A [referência JSON](CONFIGURATION.md) explica simulação, sucesso, falhas e pendências.
+
+## Amostragem dos arquivos inalterados
+
+O wizard oferece conferência por sorteio, priorizando arquivos maiores e recentes. O padrão é um arquivo por biblioteca; na CLI sem JSON, `-SamplesPerLibrary 3` amplia para três e `-SamplesPerLibrary 0` desativa. A amostra é somente leitura; a rotina normal de limpeza continua obedecendo `-Apply` e à retenção configurada. Veja os pesos e os eventos de auditoria em [Sampling](CONFIGURATION.md#amostragem-ponderada-do-incremental).

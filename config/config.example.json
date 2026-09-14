@@ -44,5 +44,12 @@
   },
   "Audit": {
     "CopyDirectory": ""
+  },
+  "Sampling": {
+    "RecencyWeight": 4,
+    "SizeWeight": 1,
+    "RecencyHalfLifeDays": 30,
+    "Enabled": true,
+    "SamplesPerLibrary": 1
   }
 }

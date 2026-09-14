@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.1.0',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.2.0',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -28,6 +28,7 @@ $script:RequiredFiles = @(
     'scripts/Send-EmailReport.ps1',
     'scripts/Configuration.ps1',
     'scripts/Resilience.ps1',
+    'scripts/Sampling.ps1',
     'scripts/Get-DailyAudit.ps1',
     'scripts/Invoke-Pilot.ps1',
     'scripts/Enable-Production.ps1',
@@ -231,9 +232,9 @@ function Protect-Secret {
 }
 
 function Read-Validated {
-    param([string]$Prompt, [string]$Default, [scriptblock]$Validate)
+    param([string]$Prompt, [string]$Default, [scriptblock]$Validate, [switch]$AllowEmpty)
     while ($true) {
-        $answer = Read-Default -Prompt $Prompt -Default $Default -Required
+        $answer = Read-Default -Prompt $Prompt -Default $Default -Required:(-not $AllowEmpty)
         try { return (& $Validate $answer) }
         catch { Write-Host "Vamos corrigir: $($_.Exception.Message)" -ForegroundColor Yellow }
     }
@@ -295,10 +296,20 @@ function New-Configuration {
         if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000000) { throw 'Use um inteiro de 1 a 1000000.' }
         $n
     }
-    $auditCopy = Read-Validated -Prompt 'Pasta externa/UNC para copiar auditoria (vazio desabilita)' -Default '' -Validate {
+    $auditCopy = Read-Validated -Prompt 'Pasta externa/UNC para copiar auditoria (vazio desabilita)' -Default '' -AllowEmpty -Validate {
         param($v)
         if ($v -and -not [IO.Path]::IsPathFullyQualified($v)) { throw 'Use uma pasta absoluta ou UNC.' }
         $v
+    }
+    $sampling = @{Enabled=$true;SamplesPerLibrary=1;SizeWeight=1;RecencyWeight=4;RecencyHalfLifeDays=30}
+    $sampling.Enabled = Read-YesNo 'Conferir uma amostra dos arquivos inalterados, priorizando maiores e recentes?' -Default $true
+    if ($sampling.Enabled) {
+        $sampling.SamplesPerLibrary = Read-Validated -Prompt 'Arquivos a conferir por biblioteca em cada execucao incremental' -Default '1' -Validate {
+            param($v)
+            $n=0
+            if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000) { throw 'Use um inteiro de 1 a 1000.' }
+            $n
+        }
     }
     $auth = @{}
     if ($SkipAppRegistration -or (Read-YesNo 'Ja possui um aplicativo com certificado para esta limpeza?')) {
@@ -356,7 +367,7 @@ function New-Configuration {
         Schedule = @{ Frequency = $frequency; Time = $time }
         Safety = @{ MinimumVersionAgeDays = $minimumAge; MaxVersionsPerRun = $maximumDeletes }
         Retry = @{ MaxRetries = 3; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
-        Audit = @{ CopyDirectory = $auditCopy }
+        Audit = @{ CopyDirectory = $auditCopy }; Sampling = $sampling
         Paths = @{ State = (Join-Path $Destination 'state'); Logs = (Join-Path $Destination 'logs') }
     }
 }

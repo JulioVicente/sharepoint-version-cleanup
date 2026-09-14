@@ -24,10 +24,12 @@ function Read-CleanupConfiguration {
     if (-not $value.ContainsKey('Safety')) { $value.Safety = @{} }
     if (-not $value.ContainsKey('Retry')) { $value.Retry = @{} }
     if (-not $value.ContainsKey('Audit')) { $value.Audit = @{} }
+    if (-not $value.ContainsKey('Sampling')) { $value.Sampling = @{} }
     $defaults = @{
         Safety = @{ MaxVersionsPerRun = 1000; MinimumVersionAgeDays = 30 }
         Retry = @{ MaxRetries = 3; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
         Audit = @{ CopyDirectory = '' }
+        Sampling = @{ Enabled = $true; SamplesPerLibrary = 1; SizeWeight = 1; RecencyWeight = 4; RecencyHalfLifeDays = 30 }
     }
     foreach ($section in $defaults.Keys) {
         if ($value[$section] -isnot [Collections.IDictionary]) { throw "$section deve ser um objeto." }
@@ -37,7 +39,9 @@ function Read-CleanupConfiguration {
     }
     foreach ($rule in @(
         @('Safety','MaxVersionsPerRun',1,1000000), @('Safety','MinimumVersionAgeDays',0,36500),
-        @('Retry','MaxRetries',0,10), @('Retry','BaseDelaySeconds',1,300), @('Retry','MaxDelaySeconds',1,3600)
+        @('Retry','MaxRetries',0,10), @('Retry','BaseDelaySeconds',1,300), @('Retry','MaxDelaySeconds',1,3600),
+        @('Sampling','SamplesPerLibrary',1,1000), @('Sampling','SizeWeight',0,100),
+        @('Sampling','RecencyWeight',0,100), @('Sampling','RecencyHalfLifeDays',1,36500)
     )) {
         $number = $value[$rule[0]][$rule[1]]
         if (($number -isnot [int] -and $number -isnot [long]) -or $number -lt $rule[2] -or $number -gt $rule[3]) {
@@ -45,6 +49,7 @@ function Read-CleanupConfiguration {
         }
     }
     if ($value.Retry.MaxDelaySeconds -lt $value.Retry.BaseDelaySeconds) { throw 'MaxDelaySeconds deve ser maior ou igual a BaseDelaySeconds.' }
+    if ($value.Sampling.Enabled -isnot [bool]) { throw 'Sampling.Enabled deve ser booleano.' }
     if ($value.Audit.CopyDirectory -and -not [IO.Path]::IsPathFullyQualified($value.Audit.CopyDirectory)) { throw 'Audit.CopyDirectory deve ser absoluto ou UNC.' }
     if (-not $value.ContainsKey('Schedule')) { $value.Schedule = @{ Frequency = 'semanal'; Time = '22:00' } }
     if ($value.Schedule.Frequency -notin 'diaria','semanal' -or $value.Schedule.Time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {

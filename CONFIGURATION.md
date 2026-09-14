@@ -250,3 +250,39 @@ O relatório contém `Success`, `Error`, `Errors`, `FilesProcessed`, `FilesUncha
 Falhas por arquivo ou biblioteca permitem continuar os demais. Qualquer falha operacional resulta em saída diferente de zero e conserva checkpoint; a retomada reavalia o histórico atual dos arquivos incompletos. Autenticação inválida, estado corrompido ou impossibilidade de gravar auditoria podem impedir continuidade. Uma interrupção abrupta pode deixar início sem evento de conclusão. Nenhum programa é imune a falhas.
 
 A cópia externa ocorre ao final, não é transmissão contínua nem armazenamento imutável. Não há reenvio automático de cópias antigas nem expiração automática de logs. Preserve os JSONL locais até confirmar a cópia.
+
+## Amostragem ponderada do incremental
+
+A partir de `v1.2.0`, a execução aplicada confere uma amostra dos arquivos que seriam pulados como inalterados. A conferência adicional consulta apenas o histórico; não exclui versões. Arquivos novos, alterados ou com idade de reavaliação vencida continuam seguindo a inspeção normal. A simulação já consulta os históricos e não faz esta amostragem adicional.
+
+```json
+"Sampling": {
+  "Enabled": true,
+  "SamplesPerLibrary": 1,
+  "SizeWeight": 1,
+  "RecencyWeight": 4,
+  "RecencyHalfLifeDays": 30
+}
+```
+
+| Opção | Valores / padrão | Efeito |
+|---|---|---|
+| `Enabled` | Booleano; `true` | Ativa a conferência adicional. |
+| `SamplesPerLibrary` | Inteiro 1–1000; `1` | Máximo de arquivos sorteados por biblioteca e execução, após terminar o processamento normal daquela biblioteca. |
+| `SizeWeight` | Inteiro 0–100; `1` | Influência do tamanho atual do arquivo. Zero remove essa preferência. |
+| `RecencyWeight` | Inteiro 0–100; `4` | Influência da última modificação. Zero remove essa preferência. |
+| `RecencyHalfLifeDays` | Inteiro 1–36500; `30` | A cada período desse tamanho, a contribuição da recência cai pela metade. Não é uma regra de retenção. |
+
+O peso é `1 + SizeWeight × log2(1 + tamanhoEmMiB) + RecencyWeight × 0.5^(diasDesdeModificação / RecencyHalfLifeDays)`. Assim, arquivos maiores e mais recentes têm preferência, mantendo peso mínimo 1 para todos. O crescimento logarítmico evita que um arquivo enorme domine proporcionalmente ao seu tamanho. Com os dois pesos configurados como zero, o sorteio é uniforme.
+
+O tamanho é o do arquivo atual, não a soma das versões. Ele vem do campo SharePoint [`File_x0020_Size`, em bytes](https://learn.microsoft.com/en-us/openspecs/sharepoint_protocols/ms-wssts/bac496c6-c19e-4243-94e0-4f92477b6e82). Tamanho inválido/ausente recebe contribuição zero; modificação inválida/ausente também. Datas futuras são tratadas como idade zero.
+
+O sorteio ocorre diretamente entre os arquivos elegíveis de cada biblioteca, dentro do escopo autorizado; a pasta é a do arquivo sorteado. Não escolhe primeiro pastas com probabilidades iguais, o que distorceria a preferência por arquivos grandes. Não inclui arquivos fora do escopo, protegidos ou em checkout. Se o limite de exclusões interromper a biblioteca, a amostragem dela fica para uma execução posterior.
+
+Em `Paths.State`, `sampling-<site>-<escopo>-<biblioteca>.json` guarda o ciclo e IDs conferidos. Um arquivo conferido não se repete enquanto houver candidatos atuais ainda não conferidos. Quando todos os candidatos atuais já constam no ciclo, começa outro. Para um conjunto estável, acessível e sem falhas, os ciclos cobrem todos esses candidatos; não representam garantia de cobertura de todo o tenant nem de arquivos que continuam falhando. Arquivos novos/alterados são inspecionados normalmente antes de entrarem no conjunto inalterado.
+
+No modo direto, `-SamplesPerLibrary 3` seleciona até três por biblioteca; `-SamplesPerLibrary 0` desativa. Os pesos são ajustáveis pelo JSON. O wizard pergunta se deseja ativar e quantos arquivos conferir, usando os pesos padrão.
+
+A auditoria registra `SampleSelected` (tamanho, idade, peso, ciclo, quantidade de candidatos e probabilidade de ser o primeiro sorteado), `SampleInspected` e `SampleFailed`. `FirstDrawProbability` não é a probabilidade de inclusão na amostra inteira quando há mais de um sorteado. O resumo da execução e `Get-DailyAudit.ps1` incluem `SamplesInspected`, `SampleDiscrepancies` e `SamplesFailed`.
+
+Uma discrepância significa que a conferência encontrou versões elegíveis segundo a política atual em um arquivo considerado inalterado; não é uma comparação byte a byte nem uma prova de corrupção. Registra aviso e invalida o inventário daquele arquivo para reavaliação normal na próxima execução. A amostragem não o exclui nesta execução. Falhas ficam registradas, retornam erro parcial e também deixam o arquivo pendente para reavaliação completa.
