@@ -89,9 +89,33 @@ $connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
     -ReturnConnection -ErrorAction Stop
 $payload = @{ message = $message; saveToSentItems = $true } | ConvertTo-Json -Depth 10
 try {
-    $null = Invoke-PnPGraphMethod -Url "users/$senderId/sendMail" -Method Post -Content $payload `
-        -ContentType 'application/json' -Connection $connection -ErrorAction Stop
+    # Send the serialized JSON bytes directly: no second serialization by the PnP object-content adapter.
+    $accessToken = Get-PnPAccessToken -ResourceTypeName Graph -Connection $connection -ErrorAction Stop
+    $secureToken = if ($accessToken -is [Security.SecureString]) { $accessToken } else {
+        ConvertTo-SecureString -String $accessToken -AsPlainText -Force
+    }
+    $accessToken = $null
+    $null = Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/users/$senderId/sendMail" `
+        -Method Post -Authentication Bearer -Token $secureToken -Body ([Text.Encoding]::UTF8.GetBytes($payload)) `
+        -ContentType 'application/json; charset=utf-8' -ErrorAction Stop
     Write-Host "Microsoft Graph aceitou o envio de $($config.Email.From). A entrega depende do Exchange Online."
 } catch {
-    throw "Falha no envio Microsoft Graph. Verifique Mail.Send (aplicativo), consentimento administrativo e acesso a caixa $($config.Email.From). $($_.Exception.Message)"
+    $statusCode = 0
+    if ($_.Exception.PSObject.Properties['Response'] -and $_.Exception.Response -and
+        $_.Exception.Response.PSObject.Properties['StatusCode']) { $statusCode = [int]$_.Exception.Response.StatusCode }
+    $detail = $_.Exception.Message
+    if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $detail += " $($_.ErrorDetails.Message)" }
+    $hint = if ($statusCode -eq 400 -or $detail -match 'BadRequest|\b400\b|missing.*Message') {
+        'O Graph rejeitou o corpo ou os parametros do email (HTTP 400). Nao e resolvido concedendo consentimento novamente.'
+    } elseif ($statusCode -eq 403 -or $detail -match '\b403\b|Forbidden|Authorization_RequestDenied|ErrorAccessDenied') {
+        'Acesso negado: verifique Mail.Send (aplicativo), consentimento e restricoes da caixa no Exchange Online.'
+    } elseif ($detail -match 'AADSTS700027') {
+        'O certificado usado nao foi reconhecido pelo Entra. Verifique a associacao ao aplicativo e sua propagacao; isso e diferente de consentimento de API.'
+    } else { 'Falha ao autenticar ou enviar pelo Graph. Consulte o erro original abaixo.' }
+    $failure = [InvalidOperationException]::new("Falha no envio Microsoft Graph. $hint $detail", $_.Exception)
+    if ($statusCode -eq 400 -or $detail -match 'BadRequest|\b400\b|missing.*Message') { $failure.Data['Retryable'] = $false }
+    throw $failure
+} finally {
+    $accessToken = $null
+    $secureToken = $null
 }

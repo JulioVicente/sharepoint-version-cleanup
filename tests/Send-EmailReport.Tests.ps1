@@ -40,12 +40,13 @@ Describe 'Send-EmailReport.ps1' {
 Describe 'Transporte Microsoft Graph' {
     BeforeAll {
         function Connect-PnPOnline { param($Url,$Tenant,$ClientId,$Thumbprint,[switch]$ReturnConnection) }
-        function Invoke-PnPGraphMethod { param($Url,$Method,$Content,$ContentType,$Connection) }
+        function Get-PnPAccessToken { param($ResourceTypeName,$Connection) }
     }
     BeforeEach {
         Mock Import-Module {}
         Mock Connect-PnPOnline { 'app-connection' }
-        Mock Invoke-PnPGraphMethod {}
+        Mock Get-PnPAccessToken { 'test-token' }
+        Mock Invoke-RestMethod {}
         $cfg = Join-Path $TestDrive 'graph.json'
         $settings = @{
             Tenant='contoso.onmicrosoft.com'; Sites=@('https://contoso.sharepoint.com')
@@ -57,15 +58,40 @@ Describe 'Transporte Microsoft Graph' {
     It 'envia pela caixa identificada no login usando certificado e HTML' {
         & $emailScript -ConfigPath $cfg -Test
         Should -Invoke Connect-PnPOnline -Times 1 -ParameterFilter { $Thumbprint -eq ('A'*40) -and $ClientId -eq '11111111-1111-1111-1111-111111111111' }
-        Should -Invoke Invoke-PnPGraphMethod -Times 1 -ParameterFilter {
-            $body = $Content | ConvertFrom-Json
-            $Url -eq 'users/22222222-2222-2222-2222-222222222222/sendMail' -and $Method -eq 'Post' -and
-            $body.message.body.contentType -eq 'HTML' -and $body.saveToSentItems -and
-            $body.message.toRecipients[0].emailAddress.address -eq 'destino@contoso.com'
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $decodedBody = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
+            $Uri -eq 'https://graph.microsoft.com/v1.0/users/22222222-2222-2222-2222-222222222222/sendMail' -and $Method -eq 'Post' -and
+            $decodedBody.message.body.contentType -eq 'HTML' -and $decodedBody.saveToSentItems -and
+            $decodedBody.message.toRecipients[0].emailAddress.address -eq 'destino@contoso.com'
         }
     }
+    It 'envia JSON UTF8 com message na raiz e token Graph protegido' {
+        & $emailScript -ConfigPath $cfg -Test
+        Should -Invoke Get-PnPAccessToken -Times 1 -ParameterFilter { $ResourceTypeName -eq 'Graph' -and $Connection -eq 'app-connection' }
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $json = [Text.Encoding]::UTF8.GetString($Body)
+            $parsed = $json | ConvertFrom-Json -AsHashtable
+            $Body -is [byte[]] -and $Token -is [Security.SecureString] -and $Authentication -eq 'Bearer' -and
+            $ContentType -eq 'application/json; charset=utf-8' -and $parsed -is [hashtable] -and
+            $parsed.ContainsKey('message') -and $parsed.message.toRecipients.Count -eq 1
+        }
+    }
+    It 'HTTP 400 informa corpo invalido e proibe repetir o mesmo pedido' {
+        Mock Invoke-RestMethod { throw 'BadRequest: missing parameters: Message' }
+        $failure = $null
+        try { & $emailScript -ConfigPath $cfg -Test } catch { $failure = $_ }
+        $failure.Exception.Message | Should -Match 'HTTP 400'
+        $failure.Exception.Message | Should -Not -Match 'Verifique Mail.Send'
+        $failure.Exception.Data['Retryable'] | Should -BeFalse
+        Should -Invoke Invoke-RestMethod -Times 1
+    }
+    It 'erro de certificado nao e apresentado como falta de Mail.Send' {
+        Mock Get-PnPAccessToken { throw 'AADSTS700027: key not found' }
+        { & $emailScript -ConfigPath $cfg -Test } | Should -Throw '*certificado*nao foi reconhecido*'
+        Should -Invoke Invoke-RestMethod -Times 0
+    }
     It 'nao oculta recusa do Graph e orienta consentimento' {
-        Mock Invoke-PnPGraphMethod { throw '403 Forbidden' }
+        Mock Invoke-RestMethod { throw '403 Forbidden' }
         { & $emailScript -ConfigPath $cfg -Test } | Should -Throw '*Mail.Send*403*'
     }
     It 'rejeita SMTP antigo com instrucao de migracao' {
@@ -77,7 +103,7 @@ Describe 'Transporte Microsoft Graph' {
     It 'previa HTML nao autentica nem envia email' {
         & $emailScript -ConfigPath $cfg -Test -PreviewPath (Join-Path $TestDrive 'graph-preview.html')
         Should -Invoke Connect-PnPOnline -Times 0
-        Should -Invoke Invoke-PnPGraphMethod -Times 0
+        Should -Invoke Invoke-RestMethod -Times 0
     }
     It 'inclui log pequeno como anexo Graph' {
         $log = Join-Path $TestDrive 'audit.jsonl'
@@ -90,10 +116,10 @@ Describe 'Transporte Microsoft Graph' {
             Warnings=@(); Error=''; FinishedAt=(Get-Date); LogPath=$log
         } | ConvertTo-Json -Depth 4 | Set-Content $report
         & $emailScript -ConfigPath $cfg -ReportPath $report
-        Should -Invoke Invoke-PnPGraphMethod -Times 1 -ParameterFilter {
-            $body = $Content | ConvertFrom-Json
-            $body.message.attachments[0].name -eq 'audit.jsonl' -and
-            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($body.message.attachments[0].contentBytes)) -match 'evento de auditoria'
+        Should -Invoke Invoke-RestMethod -Times 1 -ParameterFilter {
+            $decodedBody = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
+            $decodedBody.message.attachments[0].name -eq 'audit.jsonl' -and
+            [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($decodedBody.message.attachments[0].contentBytes)) -match 'evento de auditoria'
         }
     }
 }

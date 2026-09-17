@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.1',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.2',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -276,6 +276,23 @@ function Resolve-CleanupCertificate {
     return $certificate
 }
 
+function Confirm-CleanupCertificateRegistration {
+    param([string]$ApplicationObjectId, [string]$Thumbprint)
+    for ($attempt = 1; $attempt -le 4; $attempt++) {
+        $registered = Invoke-SetupGraph -Path ('applications/{0}?$select=appId,keyCredentials' -f $ApplicationObjectId)
+        $found = @($registered.keyCredentials | Where-Object {
+            $_.customKeyIdentifier -and $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and
+            [Convert]::ToHexString([Convert]::FromBase64String($_.customKeyIdentifier)) -eq $Thumbprint
+        })
+        if ($found.Count -gt 0) {
+            Write-Host "Certificado $Thumbprint confirmado no registro do aplicativo."
+            return
+        }
+        if ($attempt -lt 4) { Start-Sleep -Seconds 2 }
+    }
+    throw "Certificado $Thumbprint nao confirmado no aplicativo apos a gravacao. Revise Certificados e segredos; conceder consentimento de API nao corrige uma chave ausente."
+}
+
 function Set-CleanupApplicationPermissions {
     param([hashtable]$Application, [switch]$EnableGraphMail)
     $required = @($Application.requiredResourceAccess)
@@ -430,6 +447,7 @@ function Register-CleanupApplication {
     $principals = @(Get-SetupGraphCollection -Path ("servicePrincipals?`$filter=appId%20eq%20%27$($app.appId)%27&`$select=id"))
     if ($principals.Count -eq 0) { $null = Invoke-SetupGraph -Path servicePrincipals -Method POST -Body @{ appId = $app.appId } }
     $certificate = Resolve-CleanupCertificate -Application $app -CertificateDirectory $CertificateDirectory
+    Confirm-CleanupCertificateRegistration -ApplicationObjectId $app.id -Thumbprint $certificate.Thumbprint
     Set-CleanupApplicationPermissions -Application $app -EnableGraphMail:$EnableGraphMail
     Grant-CleanupSites -ClientId $app.appId -Sites $Sites
     return @{ ClientId = $app.appId; CertificateThumbprint = $certificate.Thumbprint }
@@ -538,7 +556,13 @@ function New-Configuration {
                 break
             } catch {
                 Write-Warning "Acesso ainda indisponivel: $($_.Exception.Message)"
-                Write-Host 'Revise o consentimento administrativo e aguarde a propagacao das permissoes.'
+                if ($_.Exception.Message -match 'AADSTS700027') {
+                    Write-Host "O Entra ainda nao reconhece o certificado $($auth.CertificateThumbprint) para o aplicativo $($auth.ClientId). Confira Certificados e segredos e aguarde a propagacao da chave. Consentimento de API nao corrige certificado ausente."
+                } elseif ($_.Exception.Message -match '403|Forbidden|Access denied|AccessDenied|Unauthorized') {
+                    Write-Host 'Verifique consentimento, acesso Sites.Selected ao site e politicas do tenant.'
+                } else {
+                    Write-Host 'A validacao falhou. Confira o erro original acima; a causa pode ser autenticacao, rede ou acesso ao site.'
+                }
                 if (-not (Read-YesNo 'Tentar validar o acesso novamente?' -Default $true)) { throw }
             }
         }
@@ -550,7 +574,8 @@ function New-Configuration {
                 break
             } catch {
                 Write-Warning "O teste de email falhou: $($_.Exception.Message)"
-                if (-not (Read-YesNo 'Apos corrigir permissoes ou acesso a caixa, testar o email novamente?' -Default $true)) { throw }
+                if ($_.Exception.Data.Contains('Retryable') -and -not $_.Exception.Data['Retryable']) { throw }
+                if (-not (Read-YesNo 'Apos corrigir a causa informada acima, testar o email novamente?' -Default $true)) { throw }
             }
         }
     }

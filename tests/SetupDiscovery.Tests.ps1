@@ -40,6 +40,7 @@ Describe 'Descoberta automatica no instalador' {
         Mock Find-CleanupApplication { @{id='object-id';appId=$appId} }
         Mock Get-SetupGraphCollection { @{id='principal'} }
         Mock Resolve-CleanupCertificate { @{Thumbprint=$thumb} }
+        Mock Confirm-CleanupCertificateRegistration {}
         Mock Set-CleanupApplicationPermissions {}
         Mock Grant-CleanupSites {}
         Mock Invoke-SetupGraph { throw 'Nao deve recriar' }
@@ -279,5 +280,22 @@ Describe 'Validacao imediata dos campos' {
     It 'rejeita caminho relativo e permite desabilitar copia sem escrever' {
         { Test-CleanupAuditDirectory 'pasta-relativa' } | Should -Throw '*absoluta*'
         Test-CleanupAuditDirectory '-' | Should -Be ''
+    }
+}
+
+Describe 'Confirmacao do certificado registrado' {
+    It 'confirma a chave pela consulta do aplicativo e nao pede thumbprint' {
+        Mock Invoke-SetupGraph { @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb))})} }
+        Mock Start-Sleep {}
+        Confirm-CleanupCertificateRegistration -ApplicationObjectId 'object-id' -Thumbprint $thumb
+        Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Path -eq 'applications/object-id?$select=appId,keyCredentials' }
+        Should -Invoke Start-Sleep -Times 0
+    }
+    It 'limita tentativas e orienta certificado em vez de consentimento' {
+        Mock Invoke-SetupGraph { @{keyCredentials=@()} }
+        Mock Start-Sleep {}
+        { Confirm-CleanupCertificateRegistration -ApplicationObjectId 'object-id' -Thumbprint $thumb } | Should -Throw '*Certificados e segredos*'
+        Should -Invoke Invoke-SetupGraph -Times 4
+        Should -Invoke Start-Sleep -Times 3
     }
 }
