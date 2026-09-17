@@ -15,15 +15,12 @@
   },
   "Email": {
     "Enabled": false,
-    "SmtpServer": "smtp.example.com",
-    "Port": 587,
-    "UseSsl": true,
-    "From": "relatorios@contoso.com",
+    "Provider": "Graph",
+    "From": "operacao@contoso.com",
+    "SenderUserId": "22222222-2222-2222-2222-222222222222",
     "To": [
       "operacao@contoso.com"
-    ],
-    "UserName": "",
-    "EncryptedPassword": null
+    ]
   },
   "Schedule": {
     "Frequency": "semanal",

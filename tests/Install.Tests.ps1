@@ -1,4 +1,7 @@
 BeforeAll {
+    if (-not (Get-Command Install-Module -ErrorAction SilentlyContinue)) {
+        function Install-Module { throw 'A instalacao de modulos deve ser mockada nos testes.' }
+    }
     $root = Split-Path $PSScriptRoot -Parent
     . (Join-Path $root 'Install.ps1') -WhatIf
     . (Join-Path $root 'scripts/Configuration.ps1')

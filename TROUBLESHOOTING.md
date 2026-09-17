@@ -30,7 +30,7 @@ O inventário `inventory-*.json` acelera o modo aplicado. Para forçar um levant
 
 ## Email
 
-SMTP precisa aceitar o transporte configurado. O cliente usa STARTTLS, e não OAuth ou TLS implícito na porta 465. A senha DPAPI só funciona na mesma conta e máquina. Use `-PreviewPath` para conferir o HTML sem envio. Uma falha SMTP durante limpeza aparece em `NotificationError`, sem substituir o resultado da operação; o relatório continua local.
+O envio usa Microsoft Graph com certificado. Em erro 403, confira Mail.Send (Application), consentimento administrativo e restrições de acesso à caixa no Exchange Online. A conta autenticada no assistente precisa ter caixa de correio; seu ID é salvo em Email.SenderUserId. Reexecute o assistente para migrar configurações SMTP antigas. Use -PreviewPath para conferir HTML sem envio. Falhas durante limpeza aparecem em NotificationError sem substituir o resultado da operação; o relatório continua local. A aceitação pelo Graph não garante entrega; confira destinatário e rastreamento do Exchange.
 
 ## Evidências
 
@@ -53,3 +53,5 @@ Erro parcial: consulte `Errors`, `FilesFailed`, `LibrariesFailed` e eventos `Ver
 `AuditBackupError`: confira acesso da conta da tarefa a `Audit.CopyDirectory` e copie manualmente JSONL antigos pendentes. A cópia externa não reenvia arquivos de execuções anteriores.
 
 Divergência SHA256: confira origem e versão. Em desenvolvimento, regenere o manifesto após alterações. Não desative a verificação para instalar componentes divergentes.
+
+Aplicativo já existente: o assistente atual procura e reutiliza automaticamente o registro e um certificado associado. Não é necessário digitar Client ID ou thumbprint. Erros de permissão na consulta continuam sendo erros; não são tratados como aplicativo inexistente. O comando fixado em v1.2.1 continua usando o assistente antigo. Use a versão v1.3.0 ou posterior para essas correções.

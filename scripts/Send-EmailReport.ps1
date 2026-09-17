@@ -52,25 +52,46 @@ if ($PreviewPath) {
     return
 }
 
-$message = [Net.Mail.MailMessage]::new()
-$client = [Net.Mail.SmtpClient]::new([string]$config.Email.SmtpServer, [int]$config.Email.Port)
+if (-not $config.Email.PSObject.Properties['Provider'] -or $config.Email.Provider -ne 'Graph') {
+    throw 'Reconfigure o email pelo assistente para usar Microsoft Graph. SMTP nao e mais utilizado.'
+}
+$senderId = [guid]::Empty
+if (-not $config.Email.PSObject.Properties['SenderUserId'] -or
+    -not [guid]::TryParse([string]$config.Email.SenderUserId, [ref]$senderId) -or $senderId -eq [guid]::Empty) {
+    throw 'Email.SenderUserId deve identificar a conta Microsoft 365 autenticada no assistente.'
+}
+if (@($config.Email.To).Count -eq 0) { throw 'Informe pelo menos um destinatario.' }
+$recipients = @($config.Email.To | ForEach-Object {
+    @{ emailAddress = @{ address = ([Net.Mail.MailAddress]::new([string]$_)).Address } }
+})
+$message = @{
+    subject = "[$status] SharePoint Version Cleanup - $($report.SiteUrl)"
+    body = @{ contentType = 'HTML'; content = $template }
+    toRecipients = $recipients
+}
+if (-not $Test -and $report.LogPath -and (Test-Path -LiteralPath $report.LogPath)) {
+    $log = Get-Item -LiteralPath $report.LogPath
+    if ($log.Length -le 2MB) {
+        $message.attachments = @(@{
+            '@odata.type' = '#microsoft.graph.fileAttachment'
+            name = $log.Name
+            contentType = 'text/plain'
+            contentBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($log.FullName))
+        })
+    } else {
+        Write-Warning "Log maior que 2 MB: envio do resumo sem anexo. Arquivo preservado em $($log.FullName)."
+        $message.body.content += '<p>O log excedeu o limite de anexo de 2 MB e permanece no computador executor.</p>'
+    }
+}
+Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -ErrorAction Stop
+$connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
+    -ClientId $config.Authentication.ClientId -Thumbprint $config.Authentication.CertificateThumbprint `
+    -ReturnConnection -ErrorAction Stop
+$payload = @{ message = $message; saveToSentItems = $true } | ConvertTo-Json -Depth 10
 try {
-    $message.From = [Net.Mail.MailAddress]::new([string]$config.Email.From)
-    foreach ($recipient in $config.Email.To) { [void]$message.To.Add([string]$recipient) }
-    $message.Subject = "[$status] SharePoint Version Cleanup - $($report.SiteUrl)"
-    $message.Body = $template
-    $message.IsBodyHtml = $true
-    if (-not $Test -and $report.LogPath -and (Test-Path -LiteralPath $report.LogPath)) {
-        [void]$message.Attachments.Add([Net.Mail.Attachment]::new([string]$report.LogPath))
-    }
-    $client.EnableSsl = [bool]$config.Email.UseSsl
-    if ($config.Email.UserName) {
-        $secure = ConvertTo-SecureString ([string]$config.Email.EncryptedPassword)
-        $credential = [pscredential]::new([string]$config.Email.UserName, $secure)
-        $client.Credentials = $credential.GetNetworkCredential()
-    }
-    $client.Send($message)
-} finally {
-    $message.Dispose()
-    $client.Dispose()
+    $null = Invoke-PnPGraphMethod -Url "users/$senderId/sendMail" -Method Post -Content $payload `
+        -ContentType 'application/json' -Connection $connection -ErrorAction Stop
+    Write-Host "Microsoft Graph aceitou o envio de $($config.Email.From). A entrega depende do Exchange Online."
+} catch {
+    throw "Falha no envio Microsoft Graph. Verifique Mail.Send (aplicativo), consentimento administrativo e acesso a caixa $($config.Email.From). $($_.Exception.Message)"
 }

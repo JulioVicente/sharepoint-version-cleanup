@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.2.0',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.0',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -158,79 +158,192 @@ function Copy-ProjectFiles {
     }
     $manifest | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $Destination 'release-manifest.json') -Encoding utf8
 }
-function Register-CleanupApplication {
-    param(
-        [string]$Tenant,
-        [string]$CertificateDirectory,
-        [string]$AdminUrl,
-        [string[]]$Sites
-    )
-
-    Write-Step 'Registrando o aplicativo no Microsoft Entra ID'
-    New-Item -ItemType Directory -Path $CertificateDirectory -Force | Out-Null
-    $existingThumbprints = @(Get-ChildItem Cert:\CurrentUser\My | ForEach-Object Thumbprint)
-    $certificatePassword = Read-Host 'Senha para proteger o backup PFX do certificado' -AsSecureString
-    if ($certificatePassword.Length -eq 0) { throw 'Informe uma senha para proteger o PFX.' }
-    $registration = Register-PnPEntraIDApp `
-        -ApplicationName 'SharePoint Version Cleanup' `
-        -Tenant $Tenant `
-        -OutPath $CertificateDirectory `
-        -Store CurrentUser `
-        -CertificatePassword $certificatePassword `
-        -DeviceLogin `
-        -SharePointApplicationPermissions 'Sites.Selected'
-
-    $clientId = $null
-    foreach ($property in 'AzureAppId', 'ClientId', 'ApplicationId', 'AppId') {
-        if ($registration.PSObject.Properties.Name -contains $property -and $registration.$property) {
-            $clientId = [string]$registration.$property
-            break
-        }
-    }
-    if (-not $clientId) {
-        $clientId = Read-Default -Prompt 'Client ID exibido pelo registro' -Required
-    }
-
-    $certificate = Get-ChildItem Cert:\CurrentUser\My |
-        Where-Object { $_.Thumbprint -notin $existingThumbprints } |
-        Sort-Object NotBefore -Descending |
-        Select-Object -First 1
-    if (-not $certificate) {
-        throw 'O aplicativo foi criado, mas o certificado nao foi encontrado em Cert:\CurrentUser\My.'
-    }
-
-    # Sites.Selected nao concede acesso por si so. Um administrador concede
-    # somente Write nos sites explicitamente informados durante a instalacao.
-    Write-Step 'Concedendo acesso apenas aos sites configurados'
-    if (-not $AdminClientId) {
-        Write-Host 'As concessoes Sites.Selected exigem um aplicativo administrativo interativo com Microsoft Graph Sites.FullControl.All delegado.'
-        if (Read-YesNo 'Deseja registrar esse aplicativo administrativo agora?') {
-            $adminRegistration = Register-PnPEntraIDAppForInteractiveLogin -ApplicationName 'SharePoint Cleanup Setup Admin' `
-                -Tenant $Tenant -GraphDelegatePermissions 'Sites.FullControl.All' -Interactive
-            Write-Host 'Conclua o consentimento administrativo na janela aberta. Esse aplicativo sera usado somente na configuracao.'
-        }
-        $AdminClientId = Read-Validated -Prompt 'Client ID do aplicativo administrativo interativo' -Validate {
+function Get-CleanupTenantContext {
+    param([string]$SiteUrl)
+    $siteUri = [uri]$SiteUrl
+    try {
+        $tenantId = [guid](Get-PnPTenantId -TenantUrl $siteUri.Host -ErrorAction Stop)
+        if ($tenantId -eq [guid]::Empty) { throw 'Tenant nao identificado.' }
+        $tenant = $tenantId.ToString()
+        Write-Host "Tenant identificado pelo SharePoint: $tenant"
+    } catch {
+        Write-Warning 'Nao foi possivel identificar o tenant pela URL. Informe o dominio ou ID para continuar.'
+        $tenant = Read-Validated -Prompt 'Dominio ou ID do tenant' -Validate {
             param($v)
             $id = [guid]::Empty
-            if (-not [guid]::TryParse($v,[ref]$id) -or $id -eq [guid]::Empty) { throw 'Informe um GUID valido.' }
-            $id.ToString()
+            if ([guid]::TryParse($v, [ref]$id) -and $id -ne [guid]::Empty) { return $id.ToString() }
+            if ($v -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$') { throw 'Informe um dominio ou GUID valido.' }
+            $v
         }
     }
-    $adminConnection = Connect-PnPOnline -Url $AdminUrl -Tenant $Tenant -ClientId $AdminClientId -Interactive -ReturnConnection
-    foreach ($site in $Sites) {
-        Grant-PnPEntraIDAppSitePermission -AppId $clientId -DisplayName 'SharePoint Version Cleanup' `
-            -Permissions Write -Site $site -Connection $adminConnection | Out-Null
+    $adminUrl = if ($siteUri.Host -match '^([a-zA-Z0-9-]+?)(?:-admin)?\.sharepoint\.com$') {
+        "https://$($Matches[1])-admin.sharepoint.com"
+    } else {
+        Read-Validated -Prompt 'URL administrativa do SharePoint' -Validate { param($v) ConvertTo-SiteUrl $v }
     }
-
-    return @{ ClientId = $clientId; CertificateThumbprint = $certificate.Thumbprint }
+    Write-Host "URL administrativa: $adminUrl"
+    return @{ Tenant = $tenant; AdminUrl = $adminUrl }
 }
 
-function Protect-Secret {
-    param([Security.SecureString]$Secret)
-    if (-not $Secret -or $Secret.Length -eq 0) { return $null }
-    return ConvertFrom-SecureString -SecureString $Secret
+function Invoke-SetupGraph {
+    param([string]$Path, [string]$Method = 'GET', [hashtable]$Body)
+    $request = @{ Uri = "https://graph.microsoft.com/v1.0/$Path"; Method = $Method; OutputType = 'Hashtable'; ErrorAction = 'Stop' }
+    if ($Body) { $request.Body = ($Body | ConvertTo-Json -Depth 20); $request.ContentType = 'application/json' }
+    Invoke-MgGraphRequest @request
 }
 
+function Get-SetupGraphCollection {
+    param([string]$Path)
+    do {
+        $page = Invoke-SetupGraph -Path $Path
+        foreach ($item in $page.value) { $item }
+        $next = $page['@odata.nextLink']
+        if ($next) {
+            if (-not $next.StartsWith('https://graph.microsoft.com/v1.0/')) { throw 'Paginacao Graph inesperada.' }
+            $Path = $next.Substring('https://graph.microsoft.com/v1.0/'.Length)
+        }
+    } while ($next)
+}
+
+function Connect-CleanupSetup {
+    param([string]$Tenant)
+    if (-not (Get-Module -ListAvailable Microsoft.Graph.Authentication | Where-Object Version -GE ([version]'2.0.0'))) {
+        Install-Module Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -Scope AllUsers -Repository PSGallery -Force -AllowClobber
+    }
+    Import-Module Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -ErrorAction Stop
+    $login = @{ TenantId = $Tenant; Scopes = @('Application.ReadWrite.All','Sites.FullControl.All','User.Read'); ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
+    if ($AdminClientId) { $login.ClientId = $AdminClientId }
+    Connect-MgGraph @login | Out-Null
+}
+
+function Find-CleanupApplication {
+    $apps = @(Get-SetupGraphCollection -Path 'applications?$filter=displayName%20eq%20%27SharePoint%20Version%20Cleanup%27&$select=id,appId,displayName')
+    if ($apps.Count -eq 0) { return $null }
+    $index = 0
+    if ($apps.Count -gt 1) {
+        Write-Warning 'Ha mais de um aplicativo com esse nome. Selecione o correto.'
+        for ($i = 0; $i -lt $apps.Count; $i++) { Write-Host "$($i + 1): $($apps[$i].displayName) | $($apps[$i].appId)" }
+        $index = (Read-Validated -Prompt 'Numero do aplicativo' -Validate {
+            param($v)
+            $n = 0
+            if (-not [int]::TryParse($v, [ref]$n) -or $n -lt 1 -or $n -gt $apps.Count) { throw 'Escolha um numero da lista.' }
+            $n
+        }) - 1
+    }
+    Invoke-SetupGraph -Path ('applications/{0}?$select=id,appId,displayName,keyCredentials,requiredResourceAccess' -f $apps[$index].id)
+}
+
+function Resolve-CleanupCertificate {
+    param([hashtable]$Application, [string]$CertificateDirectory)
+    $now = Get-Date
+    $thumbprints = @($Application.keyCredentials | Where-Object {
+        $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and $_.customKeyIdentifier -and
+        [datetime]$_.startDateTime -le $now -and [datetime]$_.endDateTime -gt $now
+    } | ForEach-Object { [Convert]::ToHexString([Convert]::FromBase64String($_.customKeyIdentifier)) })
+    $certificate = Get-ChildItem Cert:\CurrentUser\My | Where-Object {
+        $_.Thumbprint -in $thumbprints -and $_.HasPrivateKey -and $_.NotAfter -gt $now -and $_.NotBefore -le $now
+    } | Sort-Object NotAfter -Descending | Select-Object -First 1
+    if ($certificate) {
+        Write-Host 'Certificado local associado ao aplicativo identificado automaticamente.'
+        return $certificate
+    }
+    Write-Warning 'Nenhum certificado local utilizavel foi encontrado. Um novo certificado sera associado ao aplicativo.'
+    # A PATCH replaces the collection. Refuse to erase a credential whose key was not returned.
+    $keys = @($Application.keyCredentials)
+    foreach ($key in $keys) {
+        if (-not $key.key) { throw 'Graph nao retornou uma chave existente. Nao e seguro atualizar os certificados automaticamente.' }
+    }
+    $password = Read-Host 'Senha para proteger o backup PFX do novo certificado' -AsSecureString
+    if ($password.Length -eq 0) { throw 'Informe uma senha para proteger o PFX.' }
+    New-Item -ItemType Directory -Path $CertificateDirectory -Force | Out-Null
+    $certificate = New-SelfSignedCertificate -Subject "CN=SharePoint Version Cleanup $($Application.appId)" `
+        -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
+        -KeySpec Signature -KeyExportPolicy Exportable -NotBefore $now.AddMinutes(-5) -NotAfter $now.AddYears(1)
+    $backupBase = Join-Path $CertificateDirectory $certificate.Thumbprint
+    Export-PfxCertificate -Cert $certificate -FilePath "$backupBase.pfx" -Password $password -ErrorAction Stop | Out-Null
+    Export-Certificate -Cert $certificate -FilePath "$backupBase.cer" -ErrorAction Stop | Out-Null
+    $keys += @{
+        type = 'AsymmetricX509Cert'; usage = 'Verify'; keyId = [guid]::NewGuid().ToString()
+        displayName = 'SharePoint Version Cleanup'
+        key = [Convert]::ToBase64String($certificate.RawData)
+        customKeyIdentifier = [Convert]::ToBase64String($certificate.GetCertHash())
+        startDateTime = $certificate.NotBefore.ToUniversalTime().ToString('o')
+        endDateTime = $certificate.NotAfter.ToUniversalTime().ToString('o')
+    }
+    $null = Invoke-SetupGraph -Path "applications/$($Application.id)" -Method PATCH -Body @{ keyCredentials = $keys }
+    return $certificate
+}
+
+function Set-CleanupApplicationPermissions {
+    param([hashtable]$Application, [switch]$EnableGraphMail)
+    $required = @($Application.requiredResourceAccess)
+    $specs = @(@{ AppId = '00000003-0000-0ff1-ce00-000000000000'; Role = 'Sites.Selected' })
+    if ($EnableGraphMail) { $specs += @{ AppId = '00000003-0000-0000-c000-000000000000'; Role = 'Mail.Send' } }
+    $changed = $false
+    foreach ($spec in $specs) {
+        $providers = @(Get-SetupGraphCollection -Path ("servicePrincipals?`$filter=appId%20eq%20%27$($spec.AppId)%27&`$select=appId,appRoles"))
+        $role = @($providers.appRoles | Where-Object { $_.value -eq $spec.Role -and 'Application' -in $_.allowedMemberTypes -and $_.isEnabled })
+        if ($role.Count -ne 1) { throw "Permissao de aplicativo nao encontrada: $($spec.Role)." }
+        $resource = @($required | Where-Object resourceAppId -EQ $spec.AppId)
+        if ($resource.Count -eq 0) {
+            $entry = @{ resourceAppId = $spec.AppId; resourceAccess = @() }
+            $required += $entry
+        } else { $entry = $resource[0] }
+        if (-not @($entry.resourceAccess | Where-Object { $_.id -eq $role[0].id -and $_.type -eq 'Role' }).Count) {
+            $entry.resourceAccess = @($entry.resourceAccess) + @{ id = $role[0].id; type = 'Role' }
+            $changed = $true
+        }
+    }
+    if ($changed) {
+        $null = Invoke-SetupGraph -Path "applications/$($Application.id)" -Method PATCH -Body @{ requiredResourceAccess = $required }
+        Write-Host 'Permissoes configuradas. Conceda consentimento administrativo na pagina de permissoes do aplicativo:'
+        Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/$($Application.appId)"
+        $null = Read-Host 'Depois de conceder o consentimento administrativo, pressione Enter para validar o acesso'
+    }
+}
+
+function Grant-CleanupSites {
+    param([string]$ClientId, [string[]]$Sites)
+    foreach ($site in $Sites) {
+        $uri = [uri]$site
+        $sitePath = if ($uri.AbsolutePath -eq '/') { "sites/$($uri.Host)" } else { "sites/$($uri.Host):$($uri.AbsolutePath)" }
+        $target = Invoke-SetupGraph -Path $sitePath
+        $permissions = @(Get-SetupGraphCollection -Path "sites/$($target.id)/permissions")
+        $existing = @($permissions | Where-Object {
+            $identities = @($_['grantedToIdentities']) + @($_['grantedToIdentitiesV2'])
+            @($identities | Where-Object { $_ -and $_['application'] -and $_['application']['id'] -eq $ClientId }).Count -gt 0
+        })
+        if ($existing.Count -gt 0) {
+            if (-not @($existing.roles | Where-Object { $_ -in 'write','fullcontrol','owner' }).Count) {
+                $null = Invoke-SetupGraph -Path "sites/$($target.id)/permissions/$($existing[0].id)" -Method PATCH -Body @{ roles = @('write') }
+            }
+        } else {
+            $null = Invoke-SetupGraph -Path "sites/$($target.id)/permissions" -Method POST -Body @{
+                roles = @('write'); grantedToIdentities = @(@{ application = @{ id = $ClientId; displayName = 'SharePoint Version Cleanup' } })
+            }
+        }
+    }
+}
+
+function Register-CleanupApplication {
+    param([string]$Tenant, [string]$CertificateDirectory, [string[]]$Sites, [switch]$EnableGraphMail)
+    Write-Step 'Localizando aplicativo e certificado no Microsoft Entra ID'
+    $app = Find-CleanupApplication
+    if ($app) {
+        Write-Warning 'O aplicativo SharePoint Version Cleanup ja existe. Continuando com ele automaticamente.'
+    } else {
+        if ($SkipAppRegistration) { throw 'Nenhum aplicativo SharePoint Version Cleanup encontrado. Remova -SkipAppRegistration para permitir a criacao.' }
+        $app = Invoke-SetupGraph -Path applications -Method POST -Body @{ displayName = 'SharePoint Version Cleanup'; signInAudience = 'AzureADMyOrg' }
+        $app.keyCredentials = @()
+        $app.requiredResourceAccess = @()
+    }
+    $principals = @(Get-SetupGraphCollection -Path ("servicePrincipals?`$filter=appId%20eq%20%27$($app.appId)%27&`$select=id"))
+    if ($principals.Count -eq 0) { $null = Invoke-SetupGraph -Path servicePrincipals -Method POST -Body @{ appId = $app.appId } }
+    $certificate = Resolve-CleanupCertificate -Application $app -CertificateDirectory $CertificateDirectory
+    Set-CleanupApplicationPermissions -Application $app -EnableGraphMail:$EnableGraphMail
+    Grant-CleanupSites -ClientId $app.appId -Sites $Sites
+    return @{ ClientId = $app.appId; CertificateThumbprint = $certificate.Thumbprint }
+}
 function Read-Validated {
     param([string]$Prompt, [string]$Default, [scriptblock]$Validate, [switch]$AllowEmpty)
     while ($true) {
@@ -254,16 +367,43 @@ function New-Configuration {
     param([string]$Destination)
     Write-Step '2 de 5 - Vamos configurar o acesso e o escopo'
     Write-Host 'O acesso usa um aplicativo e um certificado da conta que executara as tarefas.'
-    $tenant = Read-Validated -Prompt 'Dominio do tenant (ex.: empresa.onmicrosoft.com)' -Validate {
-        param($v)
-        if ($v -notmatch '^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$') { throw 'Informe um dominio valido.' }
-        $v
-    }
-    $adminUrl = Read-Validated -Prompt 'URL administrativa do SharePoint' -Default "https://$($tenant.Split('.')[0])-admin.sharepoint.com" -Validate { param($v) ConvertTo-SiteUrl $v }
     $sites = @(Read-Validated -Prompt 'URLs dos sites, separadas por virgula (para teste03 use a URL raiz do site)' -Validate {
         param($v)
         @($v.Split(',') | ForEach-Object { ConvertTo-SiteUrl $_.Trim() } | Select-Object -Unique)
     })
+    $context = Get-CleanupTenantContext -SiteUrl $sites[0]
+    $tenant = $context.Tenant
+    $adminUrl = $context.AdminUrl
+    $email = @{ Enabled = (Read-YesNo 'Enviar relatorios pelo Microsoft 365 (Graph)?' -Default $true); Provider = 'Graph'; From = ''; SenderUserId = ''; To = @() }
+    Write-Step 'Autenticando no Microsoft 365 antes de configurar a limpeza'
+    Connect-CleanupSetup -Tenant $tenant
+    if ($email.Enabled) {
+        $profile = Invoke-SetupGraph -Path 'me?$select=id,mail,userPrincipalName'
+        $email.SenderUserId = [string]$profile.id
+        $email.From = if ($profile.mail) { [string]$profile.mail } else { [string]$profile.userPrincipalName }
+        if (-not $email.SenderUserId -or -not $email.From) { throw 'Nao foi possivel identificar a conta autenticada para o envio Graph.' }
+        Write-Host "Remetente Microsoft 365 identificado pelo login: $($email.From)"
+        $email.To = @(Read-Validated -Prompt 'Destinatarios separados por virgula' -Default $email.From -Validate {
+            param($v)
+            @($v.Split(',') | ForEach-Object { ([Net.Mail.MailAddress]::new($_.Trim())).Address })
+        })
+        Write-Host 'O envio agendado usa certificado e exige Mail.Send de aplicativo com consentimento administrativo no aplicativo de limpeza.'
+    }
+    $auth = Register-CleanupApplication -Tenant $tenant -CertificateDirectory (Join-Path $Destination 'certificates') -Sites $sites -EnableGraphMail:$email.Enabled
+    # Validate the certificate/app pair before asking about retention and scheduling.
+    foreach ($site in $sites) {
+        while ($true) {
+            try {
+                $connection = Connect-PnPOnline -Url $site -Tenant $tenant -ClientId $auth.ClientId -Thumbprint $auth.CertificateThumbprint -ReturnConnection -ErrorAction Stop
+                $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+                break
+            } catch {
+                Write-Warning "Acesso ainda indisponivel: $($_.Exception.Message)"
+                Write-Host 'Revise o consentimento administrativo e aguarde a propagacao das permissoes.'
+                if (-not (Read-YesNo 'Tentar validar o acesso novamente?' -Default $true)) { throw }
+            }
+        }
+    }
     $scopes = @{}
     foreach ($site in $sites) {
         Write-Host "Site: $site"
@@ -296,8 +436,9 @@ function New-Configuration {
         if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000000) { throw 'Use um inteiro de 1 a 1000000.' }
         $n
     }
-    $auditCopy = Read-Validated -Prompt 'Pasta externa/UNC para copiar auditoria (vazio desabilita)' -Default '' -AllowEmpty -Validate {
+    $auditCopy = Read-Validated -Prompt 'Pasta para copiar auditoria (Enter aceita; - desabilita)' -Default (Join-Path $Destination 'audit-copy') -Validate {
         param($v)
+        if ($v -eq '-') { return '' }
         if ($v -and -not [IO.Path]::IsPathFullyQualified($v)) { throw 'Use uma pasta absoluta ou UNC.' }
         $v
     }
@@ -309,46 +450,6 @@ function New-Configuration {
             $n=0
             if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000) { throw 'Use um inteiro de 1 a 1000.' }
             $n
-        }
-    }
-    $auth = @{}
-    if ($SkipAppRegistration -or (Read-YesNo 'Ja possui um aplicativo com certificado para esta limpeza?')) {
-        $auth.ClientId = Read-Validated -Prompt 'Client ID do aplicativo' -Validate {
-            param($v)
-            $id = [guid]::Empty
-            if (-not [guid]::TryParse($v,[ref]$id) -or $id -eq [guid]::Empty) { throw 'Informe um GUID valido.' }
-            $id.ToString()
-        }
-        $auth.CertificateThumbprint = Read-Validated -Prompt 'Thumbprint do certificado instalado para este usuario' -Validate {
-            param($v)
-            $v = $v.Replace(' ','')
-            if ($v -notmatch '^[a-fA-F0-9]{40}$') { throw 'Use os 40 caracteres do thumbprint.' }
-            $cert = Get-Item -LiteralPath "Cert:\CurrentUser\My\$v" -ErrorAction Stop
-            if (-not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) { throw 'O certificado precisa estar valido e possuir chave privada.' }
-            $v
-        }
-    } else {
-        $auth = Register-CleanupApplication -Tenant $tenant -CertificateDirectory (Join-Path $Destination 'certificates') -AdminUrl $adminUrl -Sites $sites
-    }
-    $email = @{ Enabled = $false; SmtpServer = ''; Port = 587; UseSsl = $true; From = ''; To = @(); UserName = ''; EncryptedPassword = $null }
-    if (Read-YesNo 'Deseja enviar os relatorios por email SMTP?') {
-        $email.Enabled = $true
-        $email.SmtpServer = Read-Default 'Servidor SMTP' -Required
-        $email.Port = Read-Validated -Prompt 'Porta SMTP' -Default '587' -Validate {
-            param($v)
-            $n = 0
-            if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 65535) { throw 'Use uma porta entre 1 e 65535.' }
-            $n
-        }
-        $email.From = Read-Validated -Prompt 'Email remetente' -Validate { param($v) ([Net.Mail.MailAddress]::new($v)).Address }
-        $email.To = @(Read-Validated -Prompt 'Destinatarios separados por virgula' -Default $email.From -Validate {
-            param($v)
-            @($v.Split(',') | ForEach-Object { ([Net.Mail.MailAddress]::new($_.Trim())).Address })
-        })
-        if (Read-YesNo 'O servidor SMTP exige usuario e senha?' -Default $true) {
-            $email.UserName = Read-Default 'Usuario SMTP' -Default $email.From -Required
-            do { $secret = Read-Host 'Senha SMTP (nao sera exibida)' -AsSecureString } while ($secret.Length -eq 0)
-            $email.EncryptedPassword = Protect-Secret $secret
         }
     }
     $frequency = Read-Validated -Prompt 'Periodicidade: diaria ou semanal' -Default 'semanal' -Validate {
@@ -387,7 +488,7 @@ function Invoke-SetupValidation {
         }
         while ($true) {
             try {
-                $report = & $installedCleanup @args
+                $report = & $installedCleanup @cleanupArguments
                 break
             } catch {
                 Write-Host "Nao foi possivel concluir: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -400,7 +501,7 @@ function Invoke-SetupValidation {
         if ($report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
             (Read-YesNo 'Aprova excluir as versoes antigas neste escopo para validar o piloto? A exclusao e permanente')) {
             $cleanupArguments.Apply = $true
-            $applied = & $installedCleanup @args
+            $applied = & $installedCleanup @cleanupArguments
             Show-CleanupSummary $applied
             if ($applied.Success -and $applied.VersionsDeleted -gt 0 -and $applied.FilesSkipped -eq 0 -and
                 (Read-YesNo 'Piloto aprovado. Ativar execucoes incrementais agendadas neste escopo?')) {
@@ -440,7 +541,7 @@ function Install-ScheduledTasks {
     if (-not $taskCredential) { throw 'Credencial das tarefas nao informada.' }
     $script:TaskCredential = $taskCredential
     if ($taskCredential.UserName -ne $taskUser) {
-        throw "Use a conta atual ($taskUser), pois o certificado e a senha SMTP estao protegidos para ela."
+        throw "Use a conta atual ($taskUser), pois o certificado esta instalado para ela."
     }
     $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($taskCredential.Password)
     $taskPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
@@ -526,11 +627,11 @@ try {
     if (-not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) {
         throw 'Certificado sem chave privada ou fora da validade.'
     }
-    $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
-    Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
     if ($configuration.Email.Enabled -and -not $SkipEmailTest) {
         & (Join-Path $InstallPath 'scripts/Send-EmailReport.ps1') -ConfigPath $configPath -Test
     }
+    $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
+    Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
     Write-Host "Instalacao concluida em $InstallPath. Escopos em producao: $($productionSites.Count); restantes em simulacao." -ForegroundColor Green
 } catch {
     $originalError = $_

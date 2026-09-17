@@ -2,9 +2,9 @@
 
 ## Componentes e requisitos
 
-`bootstrap.ps1` é o ponto de entrada para o comando remoto e funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4+ ou instala a versão estável pelo WinGet, verificando o código de saída. Sem WinGet, apresenta o endereço oficial para instalação manual. Em seguida inicia `Install.ps1` em PowerShell 7. O instalador requer administrador e instala/atualiza PnP.PowerShell 3.0+ para todos os usuários, verificando a importação.
+`bootstrap.ps1` é o ponto de entrada para o comando remoto e funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4+ ou instala a versão estável pelo WinGet, verificando o código de saída. Sem WinGet, apresenta o endereço oficial para instalação manual. Em seguida inicia `Install.ps1` em PowerShell 7. O instalador requer administrador e instala/atualiza PnP.PowerShell 3.0+ e Microsoft.Graph.Authentication 2.0+ para todos os usuários, verificando a importação.
 
-O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.2.1/bootstrap.ps1 | iex`. Ele é equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
+O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.0/bootstrap.ps1 | iex`. Ele é equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
 Os scripts de operação exigem PowerShell 7.4+ e PnP.PowerShell. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
@@ -14,9 +14,9 @@ Os scripts de operação exigem PowerShell 7.4+ e PnP.PowerShell. A limpeza usa 
 |---|---|
 | `InstallPath` | Pasta dedicada, padrão `%ProgramData%\SharePointVersionCleanup`. Não use a raiz do disco nem a pasta do código-fonte. |
 | `RepositoryRawUrl` | URL raw de uma revisão/pasta do repositório. Em produção, pode ser fixada num commit revisado para obter componentes da mesma revisão. |
-| `SkipAppRegistration` | Reutiliza Client ID e certificado; as concessões existentes devem ser válidas. |
-| `AdminClientId` | Aplicativo interativo administrativo usado para conceder acesso por site. Não é o aplicativo de limpeza. |
-| `SkipEmailTest` | Pula o envio SMTP de teste; não valida entrega de emails. |
+| `SkipAppRegistration` | Exige um aplicativo existente, encontrado automaticamente pelo nome; não cria outro aplicativo. Ainda pode associar um certificado e atualizar permissões. |
+| `AdminClientId` | Opcional: Client ID próprio para o login do Graph. O padrão usa Microsoft Graph PowerShell e não pede esse ID. |
+| `SkipEmailTest` | Pula o envio Graph de teste; não valida entrega de emails. |
 | `WhatIf` | Sem efeitos colaterais: não instala, baixa, escreve, registra ou agenda. |
 
 O instalador copia scripts, template, exemplo JSON e documentação operacional. `Install.ps1` é o assistente principal; `bootstrap.ps1` é o lançador. Não existem mais dois arquivos diferenciados somente por maiúsculas/minúsculas.
@@ -41,10 +41,18 @@ No Agendador, desabilite e remova apenas as tarefas desta instalação. Preserve
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.2.1` por padrão. Para fixar também o lançador, troque `main` por `v1.2.1` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
+O bootstrap instala componentes da tag `v1.3.0` por padrão. Para fixar também o lançador, troque `main` por `v1.3.0` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 
 Após mudanças no checkout, normalize os arquivos para LF conforme `.gitattributes` e execute `tools/Update-ReleaseManifest.ps1` antes dos testes e da publicação.
 
 O Agendador faz até três reinícios separados por 15 minutos após erro, inclusive para retomar trabalho que atingiu o limite de exclusões por execução. Esse limite não é diário.
+
+## Descoberta automática e consentimento
+
+O login usa Microsoft Graph PowerShell com contexto restrito ao processo. Solicita permissões delegadas Application.ReadWrite.All (localizar e configurar aplicativo/certificado), Sites.FullControl.All (conceder acesso aos sites escolhidos) e User.Read (identificar o remetente). A conta precisa das funções administrativas adequadas. O aplicativo de limpeza usa Sites.Selected no SharePoint e, com email habilitado, Mail.Send de aplicativo no Graph; as permissões delegadas administrativas não são usadas pelo agendamento.
+
+Client ID e thumbprint são descobertos automaticamente. Se houver aplicativos homônimos, o operador seleciona um item numerado. Sem certificado utilizável no Windows, o assistente cria um certificado de um ano, exporta backup PFX protegido por senha e CER em certificates e associa a chave pública, preservando as chaves anteriores. Só nessa criação pede a senha do PFX. Aplicativos existentes recebem permissões adicionais necessárias; o consentimento administrativo permanece uma etapa do tenant.
+
+A identificação automática não dispensa políticas e consentimentos da organização. A conta usada no login será o remetente do email e precisa ter caixa no Exchange Online. Para tarefas sem usuário conectado, Mail.Send exige consentimento administrativo de aplicativo. Restrinja o acesso à caixa necessária no Exchange Online.

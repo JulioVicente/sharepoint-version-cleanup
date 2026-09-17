@@ -5,7 +5,7 @@
 Em Windows PowerShell 5.1 ou PowerShell 7, **como Administrador**:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.2.1/bootstrap.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.0/bootstrap.ps1 | iex
 ```
 
 O comando acima é o instalador de uma linha. Ele baixa somente o lançador; o lançador verifica a versão fixada dos componentes e os hashes antes de iniciar o assistente.
@@ -24,7 +24,7 @@ Get-Content $bootstrap
 
 ## Responder ao wizard
 
-Tenha o domínio do tenant e a URL do site. Para uma biblioteca em `https://empresa.sharepoint.com/teste03/Forms/AllItems.aspx`, informe:
+Tenha a URL do site; o tenant será identificado automaticamente, com pergunta manual somente se a consulta falhar. Para uma biblioteca em `https://empresa.sharepoint.com/teste03/Forms/AllItems.aspx`, informe:
 
 | Pergunta | Resposta |
 |---|---|
@@ -33,11 +33,11 @@ Tenha o domínio do tenant e a URL do site. Para uma biblioteca em `https://empr
 | Caminho completo no servidor | `/teste03` |
 | Versões históricas a manter | `2` no piloto, ou o valor aprovado pela operação |
 
-O assistente valida os valores e pede correção de entradas inválidas. Ele permite reutilizar um aplicativo/certificado ou registrá-los. Para conceder `Sites.Selected`, precisa de uma sessão administrativa com aplicativo interativo apropriado; o assistente oferece registrar esse aplicativo ou pede seu Client ID. A criação exige permissões e consentimento do tenant.
+O assistente faz login pelo Microsoft Graph e procura SharePoint Version Cleanup no Entra. Um aplicativo existente gera aviso e é reutilizado, sem digitar Client ID ou thumbprint. Certificados locais válidos associados são reaproveitados; na ausência deles, cria e associa um novo, preservando os anteriores. Só pergunta qual aplicativo usar se encontrar nomes duplicados. O login administrativo e os consentimentos continuam necessários.
 
-O assistente pergunta sobre SMTP e agendamento diário/semanal. Depois solicita a simulação, mostra o resumo e pede aprovação para aplicar o piloto. Somente depois do resultado aplicado com exclusões, sem arquivos ignorados, solicita ativar as tarefas em produção. Se não houver histórico excedente, crie versões em um arquivo descartável do piloto; não será possível comprovar exclusões usando apenas arquivos com uma versão.
+O assistente oferece email pelo Graph, usando a conta autenticada como remetente e destinatário padrão, além de agendamento diário/semanal. A auditoria sugere C:\ProgramData\SharePointVersionCleanup\audit-copy; Enter aceita e - desabilita. Depois solicita a simulação, mostra o resumo e pede aprovação para aplicar o piloto. Somente depois do resultado aplicado com exclusões, sem arquivos ignorados, solicita ativar as tarefas em produção. Se não houver histórico excedente, crie versões em um arquivo descartável do piloto; não será possível comprovar exclusões usando apenas arquivos com uma versão.
 
-A credencial do Agendador deve ser da mesma conta que possui o certificado e a senha SMTP protegida. Informe a senha da conta, não o PIN do Windows Hello. O computador precisa permanecer ligado e conectado nos horários previstos; execuções perdidas iniciam quando possível.
+A credencial do Agendador deve ser da mesma conta que possui o certificado. Informe a senha da conta, não o PIN do Windows Hello. O computador precisa permanecer ligado e conectado nos horários previstos; execuções perdidas iniciam quando possível.
 
 ## Executar sem configuração JSON
 

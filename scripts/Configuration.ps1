@@ -92,12 +92,14 @@ function Read-CleanupConfiguration {
     if (-not $value.ContainsKey('Email')) { $value.Email = @{ Enabled = $false } }
     if ($value.Email.Enabled -isnot [bool]) { throw 'Email.Enabled deve ser booleano.' }
     if ($value.Email.Enabled) {
-        if ([string]::IsNullOrWhiteSpace($value.Email.SmtpServer) -or $value.Email.Port -lt 1 -or $value.Email.Port -gt 65535) { throw 'Servidor/porta SMTP invalidos.' }
-        if ($value.Email.UseSsl -isnot [bool]) { throw 'Email.UseSsl deve ser booleano.' }
+        if (-not $value.Email.ContainsKey('Provider') -or $value.Email.Provider -ne 'Graph') { throw 'Email.Provider deve ser Graph. Reconfigure o email pelo assistente; SMTP nao e mais utilizado.' }
+        $senderId = [guid]::Empty
+        if (-not $value.Email.ContainsKey('SenderUserId') -or -not [guid]::TryParse([string]$value.Email.SenderUserId, [ref]$senderId) -or $senderId -eq [guid]::Empty) {
+            throw 'Email.SenderUserId deve ser o ID da conta Microsoft 365 autenticada no assistente.'
+        }
         $null = [Net.Mail.MailAddress]::new([string]$value.Email.From)
-        if (@($value.Email.To).Count -eq 0) { throw 'Destinatario SMTP obrigatorio.' }
+        if ($value.Email.To -is [string] -or @($value.Email.To).Count -eq 0) { throw 'Email.To deve ser uma lista nao vazia de destinatarios.' }
         foreach ($recipient in $value.Email.To) { $null = [Net.Mail.MailAddress]::new([string]$recipient) }
-        if ($value.Email.UserName -and -not $value.Email.EncryptedPassword) { throw 'Senha SMTP criptografada obrigatoria quando UserName e informado.' }
     }
     return $value
 }

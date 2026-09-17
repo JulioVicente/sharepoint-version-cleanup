@@ -7,17 +7,17 @@ Assistente PowerShell para limpar versões antigas de arquivos no SharePoint Onl
 Abra **PowerShell como Administrador** e execute:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.2.1/bootstrap.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.0/bootstrap.ps1 | iex
 ```
 
 Esse é o comando curto, no estilo de instaladores como o OpenClaw: ele busca o lançador no GitHub e inicia o wizard. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
 
-O lançador em `main` instala componentes fixados na tag `v1.2.1` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
+O lançador em `main` instala componentes fixados na tag `v1.3.0` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
 
 ## Fluxo do assistente
 
 1. Verifica Windows, administrador, PowerShell e PnP.PowerShell.
-2. Pergunta tenant, sites, biblioteca/pasta, retenção, aplicativo/certificado, SMTP opcional e horário.
+2. Solicita sites, identifica o tenant pela URL e autentica no Microsoft 365. Localiza aplicativo/certificado automaticamente; configura escopo, retenção, email Graph, auditoria e horário.
 3. Executa uma simulação e mostra arquivos, versões elegíveis e espaço estimado.
 4. Solicita aprovação para aplicar o piloto; mostra o resultado real.
 5. Solicita aprovação para agendar o escopo em produção. Escopos não aprovados ficam em simulação.

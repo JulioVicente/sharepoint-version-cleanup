@@ -40,7 +40,7 @@ Esse exemplo mantém a versão atual **mais duas versões históricas** de cada 
 | `FolderScopes` | objeto | Opcional no formato legado | Mapeia cada URL de site para uma biblioteca ou pasta dentro dele. Veja as regras abaixo. |
 | `VersionsToKeep` | inteiro | Obrigatório; sugestão do wizard e modo direto: `10` | Quantidade de versões **históricas** preservadas, além da atual. Aceita 1 a 2147483647; zero, negativos, decimais e strings são rejeitados. |
 | `Authentication` | objeto | Obrigatório | Aplicativo e certificado usados pelo processo de limpeza. |
-| `Email` | objeto | Opcional; desabilitado se omitido | Configuração de envio SMTP. |
+| `Email` | objeto | Opcional; desabilitado se omitido | Configuração de envio pelo Microsoft Graph. |
 | `Schedule` | objeto | Opcional; semanal às `22:00` | Periodicidade usada na criação das tarefas. Editar o JSON não altera automaticamente o Agendador. |
 | `Paths` | objeto | Obrigatório | Diretórios locais de estado e relatórios. |
 
@@ -86,39 +86,27 @@ Get-ChildItem Cert:\CurrentUser\My | Select-Object Thumbprint, Subject, HasPriva
 
 ## Email
 
-O mínimo para não enviar mensagens é `"Email": {"Enabled": false}`. Se habilitar SMTP, use:
+O envio usa Microsoft Graph e a caixa do usuário autenticado no assistente. Para desabilitar, use `"Email": {"Enabled": false}`. Exemplo habilitado:
 
 ```json
 "Email": {
   "Enabled": true,
-  "SmtpServer": "smtp.empresa.com",
-  "Port": 587,
-  "UseSsl": true,
-  "From": "relatorios@empresa.com",
-  "To": ["operacao@empresa.com"],
-  "UserName": "relatorios@empresa.com",
-  "EncryptedPassword": "VALOR_GERADO_PELO_WIZARD"
+  "Provider": "Graph",
+  "From": "operacao@empresa.com",
+  "SenderUserId": "22222222-2222-2222-2222-222222222222",
+  "To": ["operacao@empresa.com"]
 }
 ```
 
-| Campo | Tipo | Regra |
-|---|---|---|
-| `Enabled` | boolean | Deve ser `true` ou `false`. |
-| `SmtpServer` | string | Obrigatório quando habilitado. Host do servidor, sem `smtp://`. |
-| `Port` | inteiro | 1 a 65535; wizard sugere 587. |
-| `UseSsl` | boolean | Wizard usa `true`. O transporte usa STARTTLS do `SmtpClient`, não TLS implícito da porta 465. |
-| `From` | string | Endereço válido permitido pelo servidor. |
-| `To` | array de strings | Pelo menos um destinatário válido. |
-| `UserName` | string | Usuário SMTP; vazio para relay que não exige credenciais. |
-| `EncryptedPassword` | string ou null | Necessária se `UserName` for preenchido. Não é senha em texto puro, Base64 nem senha do certificado. |
+`From` e `SenderUserId` são preenchidos pelo perfil `/me` do login Microsoft 365; o GUID acima é apenas ilustrativo. `SenderUserId` identifica a caixa usada no endpoint `/users/{id}/sendMail`. Não altere apenas `From` para trocar de remetente; execute o assistente com a conta desejada. `To` deve ser uma lista não vazia de emails válidos.
 
-A proteção usa DPAPI: o valor só pode ser descriptografado pelo **mesmo usuário no mesmo computador**. Regere ao mudar a conta ou máquina. O processo não implementa OAuth SMTP; use um servidor/relay compatível com a política da organização. Para gerar o valor manualmente em PowerShell no computador executor:
+A tarefa agendada autentica pelo aplicativo e certificado de `Authentication`, sem sessão interativa ou senha SMTP. O aplicativo precisa de **Microsoft Graph / Mail.Send (Application)** com consentimento administrativo e a conta precisa ter caixa Exchange Online. Essa permissão pode permitir enviar por outras caixas do tenant; o administrador deve restringir o aplicativo à caixa necessária no Exchange Online. A configuração `SenderUserId` escolhe o remetente, mas não limita a permissão no servidor.
 
-```powershell
-Read-Host 'Senha SMTP' -AsSecureString | ConvertFrom-SecureString
-```
+O assistente configura as permissões solicitadas preservando as anteriores e orienta o consentimento no Entra. O teste de envio ocorre antes do piloto e agendamento, exceto com `-SkipEmailTest`. Uma resposta de aceitação do Graph não comprova entrega: confirme a mensagem na caixa destinatária. O envio salva uma cópia em Itens Enviados.
 
-O wizard testa o envio, exceto com `-SkipEmailTest`. A execução registra falhas de notificação em `NotificationError` no relatório local, sem mascarar o resultado da limpeza. O teste de SMTP é um envio real; a prévia HTML é local:
+Configurações antigas de SMTP habilitado precisam ser refeitas pelo assistente. `SmtpServer`, `Port`, `UseSsl`, `UserName` e `EncryptedPassword` não são usados. O relatório HTML mantém o log como anexo até 2 MB; acima disso envia o resumo e informa que o log permanece local. Falhas de notificação ficam em `NotificationError`, sem substituir o resultado da limpeza.
+
+Prévia local, sem autenticar nem enviar:
 
 ```powershell
 .\scripts\Send-EmailReport.ps1 -ConfigPath .\config\config.json -Test -PreviewPath .\preview.html
@@ -173,7 +161,7 @@ $config = Read-CleanupConfiguration -Path .\config\config.json
 
 | Alteração | Efeito |
 |---|---|
-| Retenção, autenticação, SMTP, Logs | Lidos na próxima execução; retenção requer nova avaliação. |
+| Retenção, autenticação, Graph, Logs | Lidos na próxima execução; retenção requer nova avaliação. |
 | Pasta do site | Lida na próxima execução, mas argumento de pasta divergente faz a tarefa falhar. Atualize ambos. |
 | State | Usa outro estado e lock; implica novo levantamento. Não altere durante execução. |
 | Horário/frequência ou lista de sites | Requer atualizar/criar tarefas; editar JSON sozinho não altera o Agendador. |
@@ -286,3 +274,5 @@ No modo direto, `-SamplesPerLibrary 3` seleciona até três por biblioteca; `-Sa
 A auditoria registra `SampleSelected` (tamanho, idade, peso, ciclo, quantidade de candidatos e probabilidade de ser o primeiro sorteado), `SampleInspected` e `SampleFailed`. `FirstDrawProbability` não é a probabilidade de inclusão na amostra inteira quando há mais de um sorteado. O resumo da execução e `Get-DailyAudit.ps1` incluem `SamplesInspected`, `SampleDiscrepancies` e `SamplesFailed`.
 
 Uma discrepância significa que a conferência encontrou versões elegíveis segundo a política atual em um arquivo considerado inalterado; não é uma comparação byte a byte nem uma prova de corrupção. Registra aviso e invalida o inventário daquele arquivo para reavaliação normal na próxima execução. A amostragem não o exclui nesta execução. Falhas ficam registradas, retornam erro parcial e também deixam o arquivo pendente para reavaliação completa.
+
+O assistente sugere `<InstallPath>\audit-copy` para a cópia de auditoria (normalmente `C:\ProgramData\SharePointVersionCleanup\audit-copy`). Enter aceita; - desabilita. Essa pasta padrão é local; para uma cópia fora do computador, informe um caminho UNC.
