@@ -78,6 +78,9 @@ Describe 'Descoberta automatica no instalador' {
     It 'wizard identifica remetente e sugere pasta Windows sem pedir tenant ou identificadores' {
         Mock Get-CleanupTenantContext { @{Tenant='contoso.onmicrosoft.com';AdminUrl='https://contoso-admin.sharepoint.com'} }
         Mock Connect-CleanupSetup {}
+        Mock Test-CleanupFolderAccess { param($SiteUrl,$Folder) $Folder }
+        Mock Test-CleanupAuditDirectory { param($Path) $Path }
+        Mock Test-CleanupEmailConfiguration {}
         Mock Invoke-SetupGraph { @{id='22222222-2222-2222-2222-222222222222';mail='operador@contoso.com';userPrincipalName='operador@contoso.com'} }
         Mock Register-CleanupApplication { @{ClientId=$appId;CertificateThumbprint=$thumb} }
         Mock Connect-PnPOnline { 'connection' }
@@ -155,5 +158,126 @@ Describe 'Atualizacao segura do aplicativo' {
         Mock Invoke-SetupGraph { @{id='two';appId='second'} }
         (Find-CleanupApplication).appId | Should -Be 'second'
         Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Path -like 'applications/two?*' }
+    }
+}
+
+Describe 'URLs de bibliotecas e pastas' {
+    It 'resolve biblioteca na raiz preservando o escopo informado' {
+        Mock Invoke-SetupGraph {
+            if ($Path -eq 'sites/contoso.sharepoint.com:/teste03') { throw 'HTTP/1.1 404 Not Found' }
+            @{id='root-site'}
+        }
+        $result = Resolve-CleanupSiteInput 'https://contoso.sharepoint.com/teste03'
+        $result.SiteUrl | Should -Be 'https://contoso.sharepoint.com'
+        $result.Folder | Should -Be '/teste03'
+        Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Path -eq 'sites/contoso.sharepoint.com' }
+    }
+    It 'encontra o site pai mais proximo sem presumir que tudo pertence a raiz' {
+        Mock Invoke-SetupGraph {
+            if ($Path -eq 'sites/contoso.sharepoint.com:/sites/financeiro') { return @{id='financeiro'} }
+            throw 'HTTP/1.1 404 Not Found'
+        }
+        $result = Resolve-CleanupSiteInput 'https://contoso.sharepoint.com/sites/financeiro/Documentos%20Compartilhados/teste03'
+        $result.SiteUrl | Should -Be 'https://contoso.sharepoint.com/sites/financeiro'
+        $result.Folder | Should -Be '/sites/financeiro/Documentos Compartilhados/teste03'
+        Should -Invoke Invoke-SetupGraph -Times 0 -ParameterFilter { $Path -eq 'sites/contoso.sharepoint.com' }
+    }
+    It 'preserva URL que realmente representa um site' {
+        Mock Invoke-SetupGraph { @{id='real-site'} }
+        $result = Resolve-CleanupSiteInput 'https://contoso.sharepoint.com/teste03'
+        $result.SiteUrl | Should -Be 'https://contoso.sharepoint.com/teste03'
+        $result.Folder | Should -Be ''
+        Should -Invoke Invoke-SetupGraph -Times 1
+    }
+    It 'nao procura pais em erro 403 ou falha de rede' -ForEach @(@{Failure='HTTP/1.1 403 Forbidden'},@{Failure='Connection timed out'}) {
+        Mock Invoke-SetupGraph { throw $Failure }
+        { Resolve-CleanupSiteInput 'https://contoso.sharepoint.com/teste03' } | Should -Throw
+        Should -Invoke Invoke-SetupGraph -Times 1
+    }
+    It 'reconhece itemNotFound estruturado retornado pelo SDK' {
+        $record = [Management.Automation.ErrorRecord]::new([Exception]::new('Graph request failed'),'GraphError',[Management.Automation.ErrorCategory]::ObjectNotFound,$null)
+        $record.ErrorDetails = [Management.Automation.ErrorDetails]::new('{"error":{"code":"itemNotFound","message":"Not a site"}}')
+        Test-SetupGraphNotFound $record | Should -BeTrue
+    }
+    It 'nao aceita raiz inexistente nem retorna escopo irrestrito' {
+        Mock Invoke-SetupGraph { throw 'HTTP/1.1 404 Not Found' }
+        { Resolve-CleanupSiteInput 'https://contoso.sharepoint.com/teste03' } | Should -Throw '*Site nao encontrado*'
+        Should -Invoke Invoke-SetupGraph -Times 2
+    }
+    It 'wizard concede acesso ao site pai e grava a pasta sem ampliar escopo' {
+        Mock Get-CleanupTenantContext { @{Tenant='contoso.onmicrosoft.com';AdminUrl='https://contoso-admin.sharepoint.com'} }
+        Mock Connect-CleanupSetup {}
+        Mock Test-CleanupFolderAccess { param($SiteUrl,$Folder) $Folder }
+        Mock Test-CleanupAuditDirectory { param($Path) $Path }
+        Mock Test-CleanupEmailConfiguration {}
+        Mock Invoke-SetupGraph {
+            if ($Path -eq 'sites/contoso.sharepoint.com:/teste03') { throw 'HTTP/1.1 404 Not Found' }
+            if ($Path -eq 'sites/contoso.sharepoint.com') { return @{id='root-site'} }
+            @{id='22222222-2222-2222-2222-222222222222';mail='operador@contoso.com';userPrincipalName='operador@contoso.com'}
+        }
+        Mock Register-CleanupApplication { @{ClientId=$appId;CertificateThumbprint=$thumb} }
+        Mock Connect-PnPOnline { 'connection' }
+        Mock Get-PnPWeb {}
+        Mock Read-Host {
+            param($Prompt)
+            if ($Prompt -like 'URLs dos sites*') { return 'https://contoso.sharepoint.com/teste03' }
+            if ($Prompt -match 'Limitar a uma biblioteca|Caminho completo|TODO este site') { throw 'Nao deve perder o escopo ja informado' }
+            ''
+        }
+        $cfg = New-Configuration -Destination 'C:\ProgramData\SharePointVersionCleanup'
+        $cfg.Sites | Should -Be @('https://contoso.sharepoint.com')
+        $cfg.FolderScopes['https://contoso.sharepoint.com'] | Should -Be '/teste03'
+        Should -Invoke Register-CleanupApplication -Times 1 -ParameterFilter { $Sites.Count -eq 1 -and $Sites[0] -eq 'https://contoso.sharepoint.com' }
+    }
+}
+
+Describe 'Validacao imediata dos campos' {
+    It 'confirma biblioteca e subpasta no Graph e codifica o caminho' {
+        Mock Get-SetupGraphCollection { @{id='drive-id';webUrl='https://contoso.sharepoint.com/Documentos%20Compartilhados'} }
+        Mock Invoke-SetupGraph {
+            if ($Path -like 'sites/*') { return @{id='site-id'} }
+            @{id='folder-id';folder=@{}}
+        }
+        Test-CleanupFolderAccess -SiteUrl 'https://contoso.sharepoint.com' -Folder '/Documentos Compartilhados/Relatorios 2026' |
+            Should -Be '/Documentos Compartilhados/Relatorios 2026'
+        Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Path -eq 'drives/drive-id/root:/Relatorios%202026' }
+    }
+    It 'rejeita arquivo no lugar de pasta' {
+        Mock Get-SetupGraphCollection { @{id='drive-id';webUrl='https://contoso.sharepoint.com/docs'} }
+        Mock Invoke-SetupGraph {
+            if ($Path -like 'sites/*') { return @{id='site-id'} }
+            @{id='file-id';file=@{}}
+        }
+        { Test-CleanupFolderAccess 'https://contoso.sharepoint.com' '/docs/arquivo.docx' } | Should -Throw '*arquivo*nao*'
+    }
+    It 'nao confunde prefixos de nomes de bibliotecas' {
+        Mock Get-SetupGraphCollection { @{id='drive-id';webUrl='https://contoso.sharepoint.com/docs'} }
+        Mock Invoke-SetupGraph { @{id='site-id'} }
+        { Test-CleanupFolderAccess 'https://contoso.sharepoint.com' '/docs-antigos' } | Should -Throw '*nao encontrada*'
+        Should -Invoke Invoke-SetupGraph -Times 0 -ParameterFilter { $Path -like 'drives/*' }
+    }
+    It 'pede correcao no mesmo campo depois de pasta inexistente' {
+        $script:folderAnswers = [Collections.Generic.Queue[string]]::new()
+        $script:folderAnswers.Enqueue('/docs/ausente'); $script:folderAnswers.Enqueue('/docs/valida')
+        Mock Read-Host { $script:folderAnswers.Dequeue() }
+        Mock Get-SetupGraphCollection { @{id='drive-id';webUrl='https://contoso.sharepoint.com/docs'} }
+        Mock Invoke-SetupGraph {
+            if ($Path -like 'sites/*') { return @{id='site-id'} }
+            if ($Path -like '*/ausente') { throw 'HTTP/1.1 404 Not Found' }
+            @{id='folder-id';folder=@{}}
+        }
+        $result = Read-Validated -Prompt 'Pasta' -Validate { param($v) Test-CleanupFolderAccess 'https://contoso.sharepoint.com' $v }
+        $result | Should -Be '/docs/valida'
+        Should -Invoke Read-Host -Times 2
+    }
+    It 'testa escrita da auditoria e remove o arquivo temporario' {
+        $path = Join-Path $TestDrive 'audit-copy'
+        Test-CleanupAuditDirectory $path | Should -Be $path
+        Test-Path $path -PathType Container | Should -BeTrue
+        @(Get-ChildItem $path -Force).Count | Should -Be 0
+    }
+    It 'rejeita caminho relativo e permite desabilitar copia sem escrever' {
+        { Test-CleanupAuditDirectory 'pasta-relativa' } | Should -Throw '*absoluta*'
+        Test-CleanupAuditDirectory '-' | Should -Be ''
     }
 }

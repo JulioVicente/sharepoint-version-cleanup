@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.0',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.1',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -253,8 +253,10 @@ function Resolve-CleanupCertificate {
     foreach ($key in $keys) {
         if (-not $key.key) { throw 'Graph nao retornou uma chave existente. Nao e seguro atualizar os certificados automaticamente.' }
     }
-    $password = Read-Host 'Senha para proteger o backup PFX do novo certificado' -AsSecureString
-    if ($password.Length -eq 0) { throw 'Informe uma senha para proteger o PFX.' }
+    do {
+        $password = Read-Host 'Senha para proteger o backup PFX do novo certificado' -AsSecureString
+        if ($password.Length -eq 0) { Write-Warning 'Informe uma senha para proteger o PFX.' }
+    } while ($password.Length -eq 0)
     New-Item -ItemType Directory -Path $CertificateDirectory -Force | Out-Null
     $certificate = New-SelfSignedCertificate -Subject "CN=SharePoint Version Cleanup $($Application.appId)" `
         -CertStoreLocation 'Cert:\CurrentUser\My' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 `
@@ -299,6 +301,94 @@ function Set-CleanupApplicationPermissions {
         Write-Host 'Permissoes configuradas. Conceda consentimento administrativo na pagina de permissoes do aplicativo:'
         Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationMenuBlade/~/CallAnAPI/appId/$($Application.appId)"
         $null = Read-Host 'Depois de conceder o consentimento administrativo, pressione Enter para validar o acesso'
+    }
+}
+
+function Test-SetupGraphNotFound {
+    param([Management.Automation.ErrorRecord]$Record)
+    if ($Record.Exception.PSObject.Properties['Response'] -and $Record.Exception.Response -and
+        $Record.Exception.Response.PSObject.Properties['StatusCode']) {
+        return [int]$Record.Exception.Response.StatusCode -eq 404
+    }
+    if ($Record.ErrorDetails -and $Record.ErrorDetails.Message) {
+        try {
+            $details = $Record.ErrorDetails.Message | ConvertFrom-Json -AsHashtable
+            if ($details['error'] -and $details['error']['code'] -eq 'itemNotFound') { return $true }
+        } catch { }
+    }
+    return $Record.Exception.Message -match 'HTTP/[\d.]+\s+404\b'
+}
+
+function Resolve-CleanupSiteInput {
+    param([string]$Url)
+    $inputUrl = ConvertTo-SiteUrl $Url
+    $uri = [uri]$inputUrl
+    $originalPath = $uri.AbsolutePath.TrimEnd('/')
+    $candidatePath = $originalPath
+    while ($true) {
+        $endpoint = if ($candidatePath) { "sites/$($uri.Host):$candidatePath" } else { "sites/$($uri.Host)" }
+        try {
+            $target = Invoke-SetupGraph -Path $endpoint
+        } catch {
+            # Only a confirmed 404 permits trying an ancestor. Never turn 403/network failures into scope changes.
+            if (-not (Test-SetupGraphNotFound $_)) { throw }
+            if (-not $candidatePath) { throw "Site nao encontrado em $inputUrl. Confira a URL e o acesso da conta autenticada." }
+            $candidatePath = $candidatePath.Substring(0, $candidatePath.LastIndexOf('/'))
+            continue
+        }
+        if (-not $target['id']) { throw 'A consulta Graph nao retornou um site valido.' }
+        $siteUrl = "https://$($uri.Host)$candidatePath"
+        $folder = if ($candidatePath -ne $originalPath) {
+            ConvertTo-CleanupFolder -Value ([uri]::UnescapeDataString($originalPath)) -SiteUrl $siteUrl
+        } else { '' }
+        if ($folder) { Write-Warning "A URL informada nao e um site. Site identificado: $siteUrl; escopo restrito a biblioteca/pasta: $folder." }
+        return @{ SiteUrl = $siteUrl; Folder = $folder }
+    }
+}
+
+function Test-CleanupFolderAccess {
+    param([string]$SiteUrl, [string]$Folder)
+    $folderPath = ConvertTo-CleanupFolder -Value $Folder -SiteUrl $SiteUrl
+    $uri = [uri]$SiteUrl
+    $endpoint = if ($uri.AbsolutePath -eq '/') { "sites/$($uri.Host)" } else { "sites/$($uri.Host):$($uri.AbsolutePath)" }
+    $site = Invoke-SetupGraph -Path $endpoint
+    $drives = @(Get-SetupGraphCollection -Path "sites/$($site.id)/drives")
+    foreach ($drive in $drives) {
+        $driveUri = [uri]$drive.webUrl
+        if ($driveUri.Host -ne $uri.Host) { continue }
+        $libraryPath = [uri]::UnescapeDataString($driveUri.AbsolutePath).TrimEnd('/')
+        if ($folderPath -ne $libraryPath -and -not $folderPath.StartsWith("$libraryPath/", [StringComparison]::OrdinalIgnoreCase)) { continue }
+        $relative = $folderPath.Substring($libraryPath.Length).TrimStart('/')
+        $itemPath = "drives/$($drive.id)/root"
+        if ($relative) { $itemPath += ':/' + (($relative.Split('/') | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/') }
+        $item = Invoke-SetupGraph -Path $itemPath
+        if (-not $item.ContainsKey('folder') -or $null -eq $item['folder']) { throw 'O caminho informado representa um arquivo, nao uma biblioteca/pasta.' }
+        Write-Host "Biblioteca/pasta validada no SharePoint: $folderPath"
+        return $folderPath
+    }
+    throw "Biblioteca/pasta nao encontrada neste site: $folderPath. Informe o caminho de uma biblioteca de documentos acessivel."
+}
+
+function Test-CleanupAuditDirectory {
+    param([string]$Path)
+    if ($Path -eq '-') { return '' }
+    if (-not [IO.Path]::IsPathFullyQualified($Path)) { throw 'Use uma pasta absoluta ou UNC.' }
+    $directory = New-Item -ItemType Directory -Path $Path -Force -ErrorAction Stop
+    $probe = Join-Path $directory.FullName ('.spvc-write-test-' + [guid]::NewGuid().ToString('N'))
+    try { [IO.File]::WriteAllText($probe, '') }
+    finally { if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -ErrorAction Stop } }
+    return $directory.FullName
+}
+
+function Test-CleanupEmailConfiguration {
+    param([string]$Tenant, [string[]]$Sites, [hashtable]$Authentication, [hashtable]$Email, [string]$Destination)
+    $testConfig = Join-Path ([IO.Path]::GetTempPath()) ('spvc-email-' + [guid]::NewGuid().ToString('N') + '.json')
+    try {
+        @{ Tenant = $Tenant; Sites = $Sites; Authentication = $Authentication; Email = $Email } |
+            ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $testConfig -Encoding utf8
+        & (Join-Path $Destination 'scripts/Send-EmailReport.ps1') -ConfigPath $testConfig -Test
+    } finally {
+        if (Test-Path -LiteralPath $testConfig) { Remove-Item -LiteralPath $testConfig -ErrorAction Stop }
     }
 }
 
@@ -377,6 +467,55 @@ function New-Configuration {
     $email = @{ Enabled = (Read-YesNo 'Enviar relatorios pelo Microsoft 365 (Graph)?' -Default $true); Provider = 'Graph'; From = ''; SenderUserId = ''; To = @() }
     Write-Step 'Autenticando no Microsoft 365 antes de configurar a limpeza'
     Connect-CleanupSetup -Tenant $tenant
+    # Resolve library/folder URLs before creating certificates or changing applications.
+    $resolvedSites = [Collections.Generic.List[string]]::new()
+    $suggestedScopes = @{}
+    foreach ($inputSite in $sites) {
+        while ($true) {
+            try { $resolved = Resolve-CleanupSiteInput -Url $inputSite; break }
+            catch {
+                Write-Warning "Nao foi possivel validar o site: $($_.Exception.Message)"
+                $inputSite = Read-Validated -Prompt 'URL corrigida do site ou biblioteca/pasta (mesmo tenant)' -Validate {
+                    param($v)
+                    $normalized = ConvertTo-SiteUrl $v
+                    if (([uri]$normalized).Host -ne ([uri]$inputSite).Host) { throw 'Use o mesmo host SharePoint do login atual.' }
+                    $normalized
+                }
+            }
+        }
+        if ($suggestedScopes.ContainsKey($resolved.SiteUrl) -and $suggestedScopes[$resolved.SiteUrl] -ne $resolved.Folder) {
+            throw 'Foram informados escopos diferentes do mesmo site. Configure uma unica biblioteca/pasta por site nesta instalacao.'
+        }
+        if (-not $resolvedSites.Contains($resolved.SiteUrl)) { $resolvedSites.Add($resolved.SiteUrl) }
+        $suggestedScopes[$resolved.SiteUrl] = $resolved.Folder
+    }
+    $sites = $resolvedSites.ToArray()
+    $scopes = @{}
+    foreach ($site in $sites) {
+        Write-Host "Site: $site"
+        if ($suggestedScopes[$site]) {
+            try { $scopes[$site] = Test-CleanupFolderAccess -SiteUrl $site -Folder $suggestedScopes[$site] }
+            catch {
+                Write-Warning $_.Exception.Message
+                $scopes[$site] = Read-Validated -Prompt 'Corrija o caminho da biblioteca/pasta' -Validate {
+                    param($v)
+                    Test-CleanupFolderAccess -SiteUrl $site -Folder $v
+                }
+            }
+            Write-Host "Biblioteca/pasta identificada na URL: $($scopes[$site]). A limpeza ficara limitada a esse caminho."
+            continue
+        }
+        Write-Host 'Informe o caminho da biblioteca/pasta, ex.: /teste03. Inclua o caminho do site quando houver.'
+        if (Read-YesNo 'Limitar a uma biblioteca ou pasta?' -Default $true) {
+            $scopes[$site] = Read-Validated -Prompt 'Caminho completo dentro do servidor' -Validate {
+                param($v)
+                Test-CleanupFolderAccess -SiteUrl $site -Folder $v
+            }
+        } else {
+            if (-not (Read-YesNo 'Confirma que o escopo sera TODO este site?')) { throw 'Escopo nao confirmado. Reinicie o assistente.' }
+            $scopes[$site] = ''
+        }
+    }
     if ($email.Enabled) {
         $profile = Invoke-SetupGraph -Path 'me?$select=id,mail,userPrincipalName'
         $email.SenderUserId = [string]$profile.id
@@ -404,18 +543,15 @@ function New-Configuration {
             }
         }
     }
-    $scopes = @{}
-    foreach ($site in $sites) {
-        Write-Host "Site: $site"
-        Write-Host 'Informe o caminho da biblioteca/pasta, ex.: /teste03. Inclua o caminho do site quando houver.'
-        if (Read-YesNo 'Limitar a uma biblioteca ou pasta?' -Default $true) {
-            $scopes[$site] = Read-Validated -Prompt 'Caminho completo dentro do servidor' -Validate {
-                param($v)
-                ConvertTo-CleanupFolder -Value $v -SiteUrl $site
+    if ($email.Enabled -and -not $SkipEmailTest) {
+        while ($true) {
+            try {
+                Test-CleanupEmailConfiguration -Tenant $tenant -Sites $sites -Authentication $auth -Email $email -Destination $Destination
+                break
+            } catch {
+                Write-Warning "O teste de email falhou: $($_.Exception.Message)"
+                if (-not (Read-YesNo 'Apos corrigir permissoes ou acesso a caixa, testar o email novamente?' -Default $true)) { throw }
             }
-        } else {
-            if (-not (Read-YesNo 'Confirma que o escopo sera TODO este site?')) { throw 'Escopo nao confirmado. Reinicie o assistente.' }
-            $scopes[$site] = ''
         }
     }
     $keep = Read-Validated -Prompt 'Versoes HISTORICAS a manter (a atual sempre e preservada)' -Default '10' -Validate {
@@ -438,9 +574,7 @@ function New-Configuration {
     }
     $auditCopy = Read-Validated -Prompt 'Pasta para copiar auditoria (Enter aceita; - desabilita)' -Default (Join-Path $Destination 'audit-copy') -Validate {
         param($v)
-        if ($v -eq '-') { return '' }
-        if ($v -and -not [IO.Path]::IsPathFullyQualified($v)) { throw 'Use uma pasta absoluta ou UNC.' }
-        $v
+        Test-CleanupAuditDirectory -Path $v
     }
     $sampling = @{Enabled=$true;SamplesPerLibrary=1;SizeWeight=1;RecencyWeight=4;RecencyHalfLifeDays=30}
     $sampling.Enabled = Read-YesNo 'Conferir uma amostra dos arquivos inalterados, priorizando maiores e recentes?' -Default $true
@@ -626,9 +760,6 @@ try {
     $cert = Get-Item -LiteralPath "Cert:\CurrentUser\My\$($configuration.Authentication.CertificateThumbprint)"
     if (-not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) {
         throw 'Certificado sem chave privada ou fora da validade.'
-    }
-    if ($configuration.Email.Enabled -and -not $SkipEmailTest) {
-        & (Join-Path $InstallPath 'scripts/Send-EmailReport.ps1') -ConfigPath $configPath -Test
     }
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
     Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
