@@ -16,7 +16,7 @@ Políticas de retenção, hold, rótulos ou permissões podem impedir exclusões
 
 ## Tarefa não inicia
 
-Confira a senha da conta (não o PIN do Windows Hello), direito de logon como tarefa em lote, certificado em `Cert:\CurrentUser\My`, acesso à rede e caminhos graváveis. O computador precisa estar ligado. Confira gatilho, fuso local e histórico do Agendador. Alterar `Schedule` no JSON não atualiza o gatilho de uma tarefa existente.
+Confira a identidade LOCAL SERVICE, certificado com chave privada em `Cert:\LocalMachine\My`, acesso a rede e permissoes das pastas locais. O instalador nao solicita senha pessoal e testa essa identidade antes de agendar. O computador precisa estar ligado. Confira gatilho, fuso local e historico do Agendador. Alterar `Schedule` no JSON nao atualiza o gatilho de uma tarefa existente.
 
 ## Não remove versões
 

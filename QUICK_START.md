@@ -5,7 +5,7 @@
 Em Windows PowerShell 5.1 ou PowerShell 7, **como Administrador**:
 
 ```powershell
-iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.7/bootstrap.ps1 | iex
+iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.0/bootstrap.ps1 | iex
 ```
 
 O comando acima é o instalador de uma linha. Ele baixa somente o lançador; o lançador verifica a versão fixada dos componentes e os hashes antes de iniciar o assistente.
@@ -37,7 +37,7 @@ O assistente faz login pelo Microsoft Graph e procura SharePoint Version Cleanup
 
 O assistente oferece email pelo Graph, usando a conta autenticada como remetente e destinatário padrão, além de agendamento diário/semanal. A auditoria sugere C:\ProgramData\SharePointVersionCleanup\audit-copy; Enter aceita e - desabilita. Depois solicita a simulação, mostra o resumo e pede aprovação para aplicar o piloto. Somente depois do resultado aplicado com exclusões, sem arquivos ignorados, solicita ativar as tarefas em produção. Se não houver histórico excedente, crie versões em um arquivo descartável do piloto; não será possível comprovar exclusões usando apenas arquivos com uma versão.
 
-A credencial do Agendador deve ser da mesma conta que possui o certificado. Informe a senha da conta, não o PIN do Windows Hello. O computador precisa permanecer ligado e conectado nos horários previstos; execuções perdidas iniciam quando possível.
+As tarefas usam LOCAL SERVICE, sem senha pessoal e sem exigir sessao aberta. O instalador prepara o certificado em LocalMachine e testa o acesso sob essa identidade. O computador precisa permanecer ligado e conectado nos horarios previstos; execucoes perdidas iniciam quando possivel.
 
 ## Executar sem configuração JSON
 

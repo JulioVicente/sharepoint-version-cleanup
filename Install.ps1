@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.7',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.0',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -28,6 +28,8 @@ $script:RequiredFiles = @(
     'scripts/Send-EmailReport.ps1',
     'scripts/Configuration.ps1',
     'scripts/Progress.ps1',
+    'scripts/TaskIdentity.ps1',
+    'scripts/Test-ServiceContext.ps1',
     'scripts/Resilience.ps1',
     'scripts/Sampling.ps1',
     'scripts/Get-DailyAudit.ps1',
@@ -86,7 +88,10 @@ function Ensure-PnPModule {
     [CmdletBinding(SupportsShouldProcess)]
     param()
     Write-Step '1 de 5 - Validando e instalando dependencias'
-    $module = Get-Module -ListAvailable PnP.PowerShell |
+    $sharedModuleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
+    $module = Get-Module -ListAvailable PnP.PowerShell | Where-Object {
+        $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase)
+    } |
         Sort-Object Version -Descending |
         Select-Object -First 1
 
@@ -253,7 +258,7 @@ function Resolve-CleanupCertificate {
         $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and $_.customKeyIdentifier -and
         (ConvertTo-CleanupUtcDate $_.startDateTime) -le $nowUtc -and (ConvertTo-CleanupUtcDate $_.endDateTime) -gt $nowUtc
     } | ForEach-Object { [Convert]::ToHexString([Convert]::FromBase64String($_.customKeyIdentifier)) })
-    $certificate = Get-ChildItem Cert:\CurrentUser\My | Where-Object {
+    $certificate = Get-ChildItem Cert:\CurrentUser\My,Cert:\LocalMachine\My | Where-Object {
         $_.Thumbprint -in $thumbprints -and $_.HasPrivateKey -and $_.NotAfter.ToUniversalTime() -gt $nowUtc -and $_.NotBefore.ToUniversalTime() -le $nowUtc
     } | Sort-Object NotAfter -Descending | Select-Object -First 1
     if ($certificate) {
@@ -645,6 +650,17 @@ function New-Configuration {
     }
     $auditCopy = Read-Validated -Prompt 'Pasta para copiar auditoria (Enter aceita; - desabilita)' -Default (Join-Path $Destination 'audit-copy') -Validate {
         param($v)
+        if ($v -ne '-') {
+            $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
+            $full = [IO.Path]::GetFullPath($v).TrimEnd('\')
+            if ($v.StartsWith('\\') -or -not $full.StartsWith("$root\",[StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Use uma subpasta local da instalacao para permitir auditoria automatica sem senha pessoal.'
+            }
+            foreach ($protected in 'scripts','config','certificates') {
+                $protectedPath = Join-Path $root $protected
+                if ($full -eq $protectedPath -or $full.StartsWith("$protectedPath\",[StringComparison]::OrdinalIgnoreCase)) { throw 'A auditoria deve ficar separada dos scripts, configuracao e certificados.' }
+            }
+        }
         Test-CleanupAuditDirectory -Path $v
     }
     $sampling = @{Enabled=$true;SamplesPerLibrary=1;SizeWeight=1;RecencyWeight=4;RecencyHalfLifeDays=30}
@@ -747,18 +763,9 @@ function Install-ScheduledTasks {
     $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
     $cleanupScript = Join-Path $Destination 'scripts\cleanup-versions.ps1'
     $configPath = Join-Path $Destination 'config\config.json'
-    Write-Host 'Informe a senha da conta atual para que as tarefas possam acessar o SharePoint mesmo sem sessao interativa.'
-    $taskUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $taskCredential = Get-Credential -UserName $taskUser -Message 'Credencial da conta que executara as tarefas'
-    if (-not $taskCredential) { throw 'Credencial das tarefas nao informada.' }
-    $script:TaskCredential = $taskCredential
-    if ($taskCredential.UserName -ne $taskUser) {
-        throw "Use a conta atual ($taskUser), pois o certificado esta instalado para ela."
-    }
-    $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($taskCredential.Password)
-    $taskPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
-
-    try {
+    Write-Host 'As tarefas usarao LOCAL SERVICE e o certificado do aplicativo, sem senha pessoal e sem exigir sessao aberta.'
+    $serviceName = ([Security.Principal.SecurityIdentifier]::new('S-1-5-19')).Translate([Security.Principal.NTAccount]).Value
+    $taskPrincipal = New-ScheduledTaskPrincipal -UserId $serviceName -LogonType ServiceAccount -RunLevel Limited
         for ($index = 0; $index -lt $Configuration.Sites.Count; $index++) {
             $site = $Configuration.Sites[$index]
             $day = $days[$index % $days.Count]
@@ -789,15 +796,9 @@ function Install-ScheduledTasks {
                 }
                 Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action -Trigger $trigger `
                     -Settings $settings -Description "Limpeza de versoes: $site" `
-                    -User $taskUser -Password $taskPassword -RunLevel Highest -Force | Out-Null
+                    -Principal $taskPrincipal -Force | Out-Null
             }
         }
-    } finally {
-        if ($passwordPointer -ne [IntPtr]::Zero) {
-            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
-        }
-        $taskPassword = $null
-    }
 }
 
 # A dry run must not import/install modules, prompt, write files or register apps.
@@ -813,7 +814,7 @@ $rollbackRoot = Join-Path ([IO.Path]::GetTempPath()) ('spvc-install-' + [guid]::
 $managedFiles = @($script:RequiredFiles) + @('config/config.json', 'release-manifest.json')
 $backups = @{}
 $written = [Collections.Generic.List[string]]::new()
-$script:TaskCredential = $null
+
 try {
     Ensure-PnPModule
     New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
@@ -828,6 +829,7 @@ try {
     foreach ($relative in $managedFiles) { $written.Add((Join-Path $InstallPath $relative)) }
     Copy-ProjectFiles -Destination $InstallPath
     . (Join-Path $InstallPath 'scripts/Configuration.ps1')
+    . (Join-Path $InstallPath 'scripts/TaskIdentity.ps1')
     $configuration = New-Configuration -Destination $InstallPath
     $configPath = Join-Path $InstallPath 'config/config.json'
     $configuration | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
@@ -835,10 +837,12 @@ try {
     foreach ($folder in 'state','logs') {
         New-Item -ItemType Directory -Path (Join-Path $InstallPath $folder) -Force | Out-Null
     }
-    $cert = Get-Item -LiteralPath "Cert:\CurrentUser\My\$($configuration.Authentication.CertificateThumbprint)"
+    $cert = Get-ChildItem Cert:\CurrentUser\My,Cert:\LocalMachine\My | Where-Object Thumbprint -EQ $configuration.Authentication.CertificateThumbprint | Select-Object -First 1
     if (-not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) {
         throw 'Certificado sem chave privada ou fora da validade.'
     }
+    Initialize-CleanupServiceIdentity -Configuration $configuration -Destination $InstallPath
+    Test-CleanupServiceExecution -Configuration $configuration -Destination $InstallPath
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
     Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
     Write-Host "Instalacao concluida em $InstallPath. Escopos em producao: $($productionSites.Count); restantes em simulacao." -ForegroundColor Green
@@ -848,10 +852,10 @@ try {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Continue
     }
     foreach ($entry in $script:TaskBackups.GetEnumerator()) {
-        if ($script:TaskCredential) {
-            Register-ScheduledTask -TaskName $entry.Key -Xml $entry.Value -Force `
-                -User $script:TaskCredential.UserName -Password $script:TaskCredential.GetNetworkCredential().Password -ErrorAction Continue | Out-Null
-        }
+        # Restore previous actions/triggers using the passwordless service identity.
+        # A password-based legacy principal cannot be restored without its password.
+        $restoredXml = ConvertTo-CleanupServiceTaskXml -Xml $entry.Value
+        Register-ScheduledTask -TaskName $entry.Key -Xml $restoredXml -Force -ErrorAction Continue | Out-Null
     }
     foreach ($target in $written) {
         if ($backups.ContainsKey($target)) {
@@ -863,7 +867,6 @@ try {
     Write-Warning 'Instalacao interrompida. Registro Entra, certificado e modulo instalado podem exigir revisao administrativa.'
     throw $originalError
 } finally {
-    $script:TaskCredential = $null
     # Only the exact per-file backups and our empty temporary directory are removed.
     foreach ($backup in $backups.Values) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
     if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -ErrorAction SilentlyContinue }

@@ -72,7 +72,7 @@ O filtro da aplicação limita o que o script processa. A permissão `Sites.Sele
 | Campo | Tipo | Obrigatório | Descrição |
 |---|---|---|---|
 | `ClientId` | string GUID | Sim | Application (client) ID do aplicativo de limpeza. GUID vazio é rejeitado. Não use Object ID nem o ID do aplicativo administrativo. |
-| `CertificateThumbprint` | string hexadecimal de 40 caracteres | Sim | Thumbprint do certificado em `Cert:\CurrentUser\My` da conta executora. O certificado precisa ter chave privada e estar dentro da validade. |
+| `CertificateThumbprint` | string hexadecimal de 40 caracteres | Sim | Thumbprint do certificado em `Cert:\LocalMachine\My`, com leitura da chave privada para LOCAL SERVICE. O certificado precisa ter chave privada e estar dentro da validade. |
 
 O wizard pode registrar o aplicativo de limpeza, solicitar `Sites.Selected` no SharePoint e conceder `Write` aos sites escolhidos. A concessão usa outro aplicativo com autenticação interativa e permissão **delegada** Microsoft Graph `Sites.FullControl.All`, com consentimento administrativo. O wizard oferece registrar esse aplicativo de configuração ou permite informar um existente. Autorizações administrativas e políticas do tenant continuam sendo necessárias.
 
@@ -81,7 +81,7 @@ O wizard pode registrar o aplicativo de limpeza, solicitar `Sites.Selected` no S
 O PFX exportado pelo registro é protegido por senha solicitada no wizard. Essa senha não vai para o JSON. Guarde o backup e a chave privada sob controle de acesso. Para conferir o certificado, execute como a conta da tarefa:
 
 ```powershell
-Get-ChildItem Cert:\CurrentUser\My | Select-Object Thumbprint, Subject, HasPrivateKey, NotAfter
+Get-ChildItem Cert:\LocalMachine\My | Select-Object Thumbprint, Subject, HasPrivateKey, NotAfter
 ```
 
 ## Email
@@ -119,7 +119,7 @@ Prévia local, sem autenticar nem enviar:
 | `Frequency` | string | `diaria` ou `semanal`; padrão semanal. |
 | `Time` | string | Horário local `HH:mm`, 00:00 a 23:59; padrão `22:00`. |
 
-A execução usa o **Agendador de Tarefas do Windows**, com `pwsh.exe -NonInteractive`. Não instala um Windows Service residente. O Agendador guarda a credencial da conta atual para funcionar sem sessão aberta; o JSON não guarda essa senha. A conta deve possuir direito de logon como tarefa em lote e acesso ao certificado, rede e pastas locais.
+A execução usa o **Agendador de Tarefas do Windows**, com `pwsh.exe -NonInteractive`. Não instala um Windows Service residente. O Agendador usa LOCAL SERVICE (ServiceAccount), sem senha pessoal e sem exigir sessao aberta. O certificado e preparado em LocalMachine; a chave e restrita a administradores, SYSTEM e leitura para LOCAL SERVICE. Estado, logs e copia de auditoria devem ficar em subpastas locais da instalacao. A conta de servico tem leitura dos componentes e gravacao apenas nas pastas de dados.
 
 No modo semanal, os sites são distribuídos de segunda a sexta, conforme a ordem em `Sites`; o sexto volta à segunda. As tarefas têm prefixo `SharePoint Version Cleanup - NN`, iniciam quando possível se perderem o horário, não iniciam outra instância da mesma tarefa e possuem limite de 12 horas.
 
