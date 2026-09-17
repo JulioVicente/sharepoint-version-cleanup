@@ -75,3 +75,11 @@ HTTP 400 / BadRequest com parâmetro Message ausente indica um pedido de email i
 A validade retornada pelo Graph pode chegar como DateTime UTC, DateTimeOffset ou texto ISO. A seleção agora normaliza os instantes para UTC antes da comparação com a validade local; isso corrige o descarte de certificados recentes causado pela comparação direta de UTC com horário local. O certificado precisa continuar válido e ter chave privada.
 
 A confirmação remota compara o hash da chave pública real (campo key), não apenas customKeyIdentifier. Se a autenticação retornar AADSTS700027, tenta até seis vezes, com dez segundos de intervalo, sempre usando a mesma chave. Outras falhas não são tratadas como propagação. Se o aplicativo inteiro tiver sido apagado no Entra, a próxima execução criará outro Client ID e precisará de novo consentimento. Essa recriação também exigirá associar um certificado ao novo registro.
+
+## v1.3.4: acesso negado ao consultar bibliotecas
+
+O consentimento de Sites.Selected no Entra nao comprova a concessao ao site. O assistente agora relê as permissoes do site e confirma o Client ID atual e o papel de escrita, inclusive depois de recriar o aplicativo. Valida tambem Get-PnPList antes da simulacao; uma conexao ou Get-PnPWeb bem-sucedido nao basta.
+
+Com pasta definida, consulta diretamente sua biblioteca. Sem pasta, consulta as bibliotecas do site. A consulta evita solicitar todas as propriedades de RootFolder e preserva o erro original com o site e o escopo. Nao amplia permissoes automaticamente para FullControl. Se a negacao persistir com a concessao confirmada, examine propagacao, restricoes das bibliotecas e politicas do tenant. Envio aceito pelo Graph comprova somente o envio ao servico de email, nao acesso ao SharePoint.
+
+Periodicidade no assistente: D para diaria, S para semanal (padrao S). No JSON, Schedule.Frequency continua diaria/semanal; nomes de campos e valores Graph/true/false nao devem ser traduzidos.

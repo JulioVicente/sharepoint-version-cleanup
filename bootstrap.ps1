@@ -3,7 +3,7 @@
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
     [string]$RepositoryRawUrl,
-    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.3.3',
+    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.3.4',
     [switch]$SkipAppRegistration,
     [switch]$SkipEmailTest,
     [string]$AdminClientId

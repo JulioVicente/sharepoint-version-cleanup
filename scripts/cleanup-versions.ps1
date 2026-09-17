@@ -147,9 +147,7 @@ try {
         foreach ($url in $savedCheckpoint.CompletedFiles) { $completed.Add([string]$url) | Out-Null }
     }
     $scannedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $libraries = Invoke-PnPRequest { Get-PnPList -Includes RootFolder,IsCatalog -Connection $connection } | Where-Object {
-        $_.BaseTemplate -eq 101 -and -not $_.Hidden -and -not $_.IsCatalog
-    }
+    $libraries = Invoke-PnPRequest { Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $scopeFolder -Connection $connection }
 
     :libraryLoop foreach ($library in $libraries) {
         try {

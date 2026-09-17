@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.3',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.4',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -306,13 +306,14 @@ function Confirm-CleanupCertificateRegistration {
 }
 
 function Connect-CleanupSite {
-    param([string]$SiteUrl, [string]$Tenant, [hashtable]$Authentication,
+    param([string]$SiteUrl, [string]$Tenant, [hashtable]$Authentication, [string]$FolderServerRelativeUrl,
         [ValidateRange(1,12)][int]$MaxAttempts = 6, [ValidateRange(0,30)][int]$DelaySeconds = 10)
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
             $connection = Connect-PnPOnline -Url $SiteUrl -Tenant $Tenant -ClientId $Authentication.ClientId `
                 -Thumbprint $Authentication.CertificateThumbprint -ReturnConnection -ErrorAction Stop
             $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+            $null = Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $FolderServerRelativeUrl -Connection $connection
             return $connection
         } catch {
             if ($_.Exception.Message -notmatch 'AADSTS700027' -or $attempt -eq $MaxAttempts) { throw }
@@ -450,7 +451,7 @@ function Grant-CleanupSites {
             @($identities | Where-Object { $_ -and $_['application'] -and $_['application']['id'] -eq $ClientId }).Count -gt 0
         })
         if ($existing.Count -gt 0) {
-            if (-not @($existing.roles | Where-Object { $_ -in 'write','fullcontrol','owner' }).Count) {
+            if (-not @($existing.roles | Where-Object { $_ -in 'write','manage','fullcontrol','owner' }).Count) {
                 $null = Invoke-SetupGraph -Path "sites/$($target.id)/permissions/$($existing[0].id)" -Method PATCH -Body @{ roles = @('write') }
             }
         } else {
@@ -458,6 +459,18 @@ function Grant-CleanupSites {
                 roles = @('write'); grantedToIdentities = @(@{ application = @{ id = $ClientId; displayName = 'SharePoint Version Cleanup' } })
             }
         }
+        $confirmed = @()
+        for ($attempt = 1; $attempt -le 4; $attempt++) {
+            $confirmed = @(Get-SetupGraphCollection -Path "sites/$($target.id)/permissions" | Where-Object {
+                $identities = @($_['grantedToIdentities']) + @($_['grantedToIdentitiesV2'])
+                $matching = @($identities | Where-Object { $_ -and $_['application'] -and $_['application']['id'] -eq $ClientId })
+                $matching.Count -gt 0 -and @($_.roles | Where-Object { $_ -in 'write','manage','fullcontrol','owner' }).Count -gt 0
+            })
+            if ($confirmed.Count) { break }
+            if ($attempt -lt 4) { Start-Sleep -Seconds 2 }
+        }
+        if (-not $confirmed.Count) { throw "Concessao Sites.Selected nao confirmada para o aplicativo $ClientId no site $site." }
+        Write-Host "Concessao Sites.Selected confirmada: aplicativo $ClientId | site $site | papel $($confirmed.roles -join ', ')."
     }
 }
 
@@ -580,14 +593,14 @@ function New-Configuration {
     foreach ($site in $sites) {
         while ($true) {
             try {
-                $null = Connect-CleanupSite -SiteUrl $site -Tenant $tenant -Authentication $auth
+                $null = Connect-CleanupSite -SiteUrl $site -Tenant $tenant -Authentication $auth -FolderServerRelativeUrl $scopes[$site]
                 break
             } catch {
                 Write-Warning "Acesso ainda indisponivel: $($_.Exception.Message)"
                 if ($_.Exception.Message -match 'AADSTS700027') {
                     Write-Host "O Entra ainda nao reconhece o certificado $($auth.CertificateThumbprint) para o aplicativo $($auth.ClientId). Confira Certificados e segredos e aguarde a propagacao da chave. Consentimento de API nao corrige certificado ausente."
-                } elseif ($_.Exception.Message -match '403|Forbidden|Access denied|AccessDenied|Unauthorized') {
-                    Write-Host 'Verifique consentimento, acesso Sites.Selected ao site e politicas do tenant.'
+                } elseif ($_.Exception.Message -match '403|Forbidden|Access denied|AccessDenied|Unauthorized|Acesso negado') {
+                    Write-Host "Aplicativo: $($auth.ClientId) | Site: $site. O consentimento de Sites.Selected no Entra e a concessao de escrita neste site sao verificacoes distintas. Se a concessao foi confirmada acima, verifique propagacao e restricoes das bibliotecas ou do tenant."
                 } else {
                     Write-Host 'A validacao falhou. Confira o erro original acima; a causa pode ser autenticacao, rede ou acesso ao site.'
                 }
@@ -639,10 +652,13 @@ function New-Configuration {
             $n
         }
     }
-    $frequency = Read-Validated -Prompt 'Periodicidade: diaria ou semanal' -Default 'semanal' -Validate {
+    $frequency = Read-Validated -Prompt 'Periodicidade: D = diaria, S = semanal' -Default 'S' -Validate {
         param($v)
-        if ($v -notin 'diaria','semanal') { throw 'Digite diaria ou semanal.' }
-        $v
+        switch ($v.Trim().ToUpperInvariant()) {
+            { $_ -in 'D','DIARIA' } { 'diaria'; break }
+            { $_ -in 'S','SEMANAL' } { 'semanal'; break }
+            default { throw 'Digite D para diaria ou S para semanal.' }
+        }
     }
     $time = Read-Validated -Prompt 'Horario local da tarefa (HH:mm)' -Default '22:00' -Validate {
         param($v)

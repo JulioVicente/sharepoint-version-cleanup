@@ -22,7 +22,7 @@ Describe 'cleanup-versions.ps1' {
 
         # Declara os comandos para que esta suite rode mesmo sem PnP.PowerShell instalado.
         function global:Connect-PnPOnline { param($Url,$ClientId,$Tenant,$Thumbprint,[switch]$ReturnConnection) }
-        function global:Get-PnPList { param($Connection,$Includes) }
+        function global:Get-PnPList { param($Connection,$Includes,$Identity,[switch]$ThrowExceptionIfListNotFound) }
         function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection) }
         function global:Get-PnPFolder { param($Url,$Connection) }
         function global:Get-PnPFile { param($Url,[switch]$AsFileObject,$Connection) }
@@ -131,6 +131,7 @@ Describe 'cleanup-versions.ps1' {
     }
 
     It 'executa sem JSON e limita arquivos por fronteira de pasta' {
+        Mock Get-PnPList { throw 'Acesso negado na enumeracao geral' } -ParameterFilter { -not $Identity }
         Mock Get-PnPListItem {
             @(
                 @{ FSObjType = 0; FileRef = '/sites/test/docs/a.docx' }
@@ -145,6 +146,8 @@ Describe 'cleanup-versions.ps1' {
         $r.VersionsEligible | Should -Be 4
         Assert-MockCalled Remove-PnPFileVersion 0 -Scope It
         Assert-MockCalled Get-PnPFile 0 -Scope It -ParameterFilter { $Url -like '*docs-outro*' }
+        Should -Invoke Get-PnPList -Times 1 -ParameterFilter { $Identity -eq '/sites/test/docs' -and $ThrowExceptionIfListNotFound }
+        Should -Invoke Get-PnPList -Times 0 -ParameterFilter { -not $Identity }
     }
 
     It 'ignora checkout e rotulos mas aceita compliance flags zero' {

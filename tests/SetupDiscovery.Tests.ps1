@@ -7,7 +7,9 @@ BeforeAll {
     $appId = '11111111-1111-1111-1111-111111111111'
     $thumb = '0123456789ABCDEF0123456789ABCDEF01234567'
 }
+
 Describe 'Descoberta automatica no instalador' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
     It 'descobre tenant sem perguntar dominio ou URL administrativa' {
         Mock Get-PnPTenantId { '22222222-2222-2222-2222-222222222222' }
         Mock Read-Host { throw 'Nao deve perguntar' }
@@ -76,7 +78,15 @@ Describe 'Descoberta automatica no instalador' {
         Grant-CleanupSites -ClientId $appId -Sites @('https://contoso.sharepoint.com')
         Should -Invoke Invoke-SetupGraph -Times 0 -ParameterFilter { $Method -and $Method -ne 'GET' }
     }
-    It 'wizard identifica remetente e sugere pasta Windows sem pedir tenant ou identificadores' {
+    It 'nao confunde concessao do aplicativo antigo com a do atual' {
+        Mock Invoke-SetupGraph { @{id='site-id'} }
+        Mock Get-SetupGraphCollection { @{id='old';roles=@('write');grantedToIdentitiesV2=@(@{application=@{id='old-app'}})} }
+        Mock Start-Sleep {}
+        { Grant-CleanupSites -ClientId $appId -Sites @('https://contoso.sharepoint.com/sites/test') } | Should -Throw '*nao confirmada*'
+        Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Method -eq 'POST' -and $Body.grantedToIdentities[0].application.id -eq $appId }
+        Should -Invoke Start-Sleep -Times 3
+    }
+    It 'wizard identifica remetente e aceita periodicidade <Answer>' -ForEach @(@{Answer='d';Expected='diaria'},@{Answer='s';Expected='semanal'},@{Answer='';Expected='semanal'}) {
         Mock Get-CleanupTenantContext { @{Tenant='contoso.onmicrosoft.com';AdminUrl='https://contoso-admin.sharepoint.com'} }
         Mock Connect-CleanupSetup {}
         Mock Test-CleanupFolderAccess { param($SiteUrl,$Folder) $Folder }
@@ -90,6 +100,7 @@ Describe 'Descoberta automatica no instalador' {
             param($Prompt)
             if ($Prompt -like 'URLs dos sites*') { return 'https://contoso.sharepoint.com' }
             if ($Prompt -like 'Caminho completo*') { return '/teste03' }
+            if ($Prompt -like 'Periodicidade*') { return $Answer }
             if ($Prompt -match 'Client ID|Thumbprint|Dominio|Servidor SMTP|Porta SMTP|Senha SMTP|Ja possui') { throw "Pergunta desnecessaria: $Prompt" }
             return ''
         }
@@ -97,12 +108,14 @@ Describe 'Descoberta automatica no instalador' {
         $cfg.Email.From | Should -Be 'operador@contoso.com'
         $cfg.Email.SenderUserId | Should -Be '22222222-2222-2222-2222-222222222222'
         $cfg.Email.Provider | Should -Be 'Graph'
+        $cfg.Schedule.Frequency | Should -Be $Expected
         $cfg.Audit.CopyDirectory | Should -Be 'C:\ProgramData\SharePointVersionCleanup\audit-copy'
         Should -Invoke Connect-CleanupSetup -Times 1
     }
 }
 
 Describe 'Atualizacao segura do aplicativo' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
     BeforeAll {
         function New-SelfSignedCertificate { param($Subject,$CertStoreLocation,$KeyAlgorithm,$KeyLength,$HashAlgorithm,$KeySpec,$KeyExportPolicy,$NotBefore,$NotAfter) }
         function Export-PfxCertificate { param($Cert,$FilePath,$Password) }
@@ -163,6 +176,7 @@ Describe 'Atualizacao segura do aplicativo' {
 }
 
 Describe 'URLs de bibliotecas e pastas' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
     It 'resolve biblioteca na raiz preservando o escopo informado' {
         Mock Invoke-SetupGraph {
             if ($Path -eq 'sites/contoso.sharepoint.com:/teste03') { throw 'HTTP/1.1 404 Not Found' }
@@ -233,6 +247,7 @@ Describe 'URLs de bibliotecas e pastas' {
 }
 
 Describe 'Validacao imediata dos campos' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
     It 'confirma biblioteca e subpasta no Graph e codifica o caminho' {
         Mock Get-SetupGraphCollection { @{id='drive-id';webUrl='https://contoso.sharepoint.com/Documentos%20Compartilhados'} }
         Mock Invoke-SetupGraph {
@@ -284,6 +299,7 @@ Describe 'Validacao imediata dos campos' {
 }
 
 Describe 'Confirmacao do certificado registrado' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
     It 'confirma a chave pela consulta do aplicativo e nao pede thumbprint' {
         $thumb = [Convert]::ToHexString([Security.Cryptography.SHA1]::HashData([byte[]]@(1,2,3)))
         Mock Invoke-SetupGraph { @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';key='AQID';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb))})} }
@@ -302,6 +318,15 @@ Describe 'Confirmacao do certificado registrado' {
 }
 
 Describe 'Validade UTC e propagacao de certificados' {
+    BeforeEach { Mock Get-CleanupLibraries {} }
+    It 'valida a biblioteca com a mesma conexao e escopo antes de aceitar acesso' {
+        Mock Connect-PnPOnline { 'connection' }
+        Mock Get-PnPWeb {}
+        Mock Get-CleanupLibraries { throw 'Acesso negado a biblioteca' }
+        { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} -FolderServerRelativeUrl '/docs' } | Should -Throw '*Acesso negado*'
+        Should -Invoke Get-CleanupLibraries -Times 1 -ParameterFilter { $Connection -eq 'connection' -and $FolderServerRelativeUrl -eq '/docs' }
+        Should -Invoke Connect-PnPOnline -Times 1
+    }
     It 'compara instantes UTC e offsets locais sem deslocar o inicio da validade' {
         $expected = [datetime]::SpecifyKind([datetime]'2026-09-17T18:48:25', [DateTimeKind]::Utc)
         ConvertTo-CleanupUtcDate ([datetimeoffset]'2026-09-17T15:48:25-03:00') | Should -Be $expected

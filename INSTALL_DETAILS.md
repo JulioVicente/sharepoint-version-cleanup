@@ -4,7 +4,7 @@
 
 `bootstrap.ps1` é o ponto de entrada para o comando remoto e funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4+ ou instala a versão estável pelo WinGet, verificando o código de saída. Sem WinGet, apresenta o endereço oficial para instalação manual. Em seguida inicia `Install.ps1` em PowerShell 7. O instalador requer administrador e instala/atualiza PnP.PowerShell 3.0+ e Microsoft.Graph.Authentication 2.0+ para todos os usuários, verificando a importação.
 
-O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.3/bootstrap.ps1 | iex`. Ele é equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
+O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.4/bootstrap.ps1 | iex`. Ele é equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
 Os scripts de operação exigem PowerShell 7.4+ e PnP.PowerShell. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
@@ -41,7 +41,7 @@ No Agendador, desabilite e remova apenas as tarefas desta instalação. Preserve
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.3.3` por padrão. Para fixar também o lançador, troque `main` por `v1.3.3` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
+O bootstrap instala componentes da tag `v1.3.4` por padrão. Para fixar também o lançador, troque `main` por `v1.3.4` na URL do comando. O parâmetro `-ReleaseVersion` seleciona outra tag no bootstrap; `-RepositoryRawUrl` permite usar um commit/origem com manifesto compatível.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 

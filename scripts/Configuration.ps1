@@ -115,3 +115,26 @@ function ConvertTo-CleanupFolder {
     }
     return $folder
 }
+
+function Get-CleanupLibraries {
+    param([string]$SiteUrl, [string]$FolderServerRelativeUrl, $Connection)
+    $parameters = @{ Includes = @('IsCatalog'); Connection = $Connection; ErrorAction = 'Stop' }
+    if ($FolderServerRelativeUrl) {
+        $folder = ConvertTo-CleanupFolder -Value $FolderServerRelativeUrl -SiteUrl $SiteUrl
+        $sitePath = [uri]::UnescapeDataString(([uri]$SiteUrl).AbsolutePath).TrimEnd('/')
+        $libraryName = $folder.Substring($sitePath.Length).TrimStart('/').Split('/')[0]
+        $parameters.Identity = "$sitePath/$libraryName"
+        $parameters.ThrowExceptionIfListNotFound = $true
+    }
+    try {
+        $libraries = @(Get-PnPList @parameters | Where-Object {
+            $_.BaseTemplate -eq 101 -and -not $_.Hidden -and -not $_.IsCatalog
+        })
+    } catch {
+        throw [InvalidOperationException]::new("Falha ao consultar bibliotecas em $SiteUrl (escopo: '$FolderServerRelativeUrl'): $($_.Exception.Message)", $_.Exception)
+    }
+    if ($FolderServerRelativeUrl -and $libraries.Count -ne 1) {
+        throw "A biblioteca do escopo $FolderServerRelativeUrl nao esta disponivel para limpeza."
+    }
+    return $libraries
+}
