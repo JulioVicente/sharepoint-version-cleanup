@@ -1,5 +1,6 @@
 #requires -Version 7.4
 # Shared validation; dot-sourcing this file has no external effects.
+. (Join-Path $PSScriptRoot 'Progress.ps1')
 function ConvertTo-SiteUrl {
     param([Parameter(Mandatory)][string]$Value)
     $uri = $null

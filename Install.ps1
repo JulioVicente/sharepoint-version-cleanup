@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.4',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.5',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -27,6 +27,7 @@ $script:RequiredFiles = @(
     'scripts/cleanup-versions.ps1',
     'scripts/Send-EmailReport.ps1',
     'scripts/Configuration.ps1',
+    'scripts/Progress.ps1',
     'scripts/Resilience.ps1',
     'scripts/Sampling.ps1',
     'scripts/Get-DailyAudit.ps1',
@@ -189,7 +190,7 @@ function Invoke-SetupGraph {
     param([string]$Path, [string]$Method = 'GET', [hashtable]$Body)
     $request = @{ Uri = "https://graph.microsoft.com/v1.0/$Path"; Method = $Method; OutputType = 'Hashtable'; ErrorAction = 'Stop' }
     if ($Body) { $request.Body = ($Body | ConvertTo-Json -Depth 20); $request.ContentType = 'application/json' }
-    Invoke-MgGraphRequest @request
+    Invoke-CleanupActivity -Message 'Consultando Microsoft 365...' -Action { Invoke-MgGraphRequest @request }
 }
 
 function Get-SetupGraphCollection {
@@ -310,15 +311,19 @@ function Connect-CleanupSite {
         [ValidateRange(1,12)][int]$MaxAttempts = 6, [ValidateRange(0,30)][int]$DelaySeconds = 10)
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
-            $connection = Connect-PnPOnline -Url $SiteUrl -Tenant $Tenant -ClientId $Authentication.ClientId `
-                -Thumbprint $Authentication.CertificateThumbprint -ReturnConnection -ErrorAction Stop
-            $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
-            $null = Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $FolderServerRelativeUrl -Connection $connection
+            $connection = Invoke-CleanupActivity -Message 'Conectando ao SharePoint...' -Action {
+                Connect-PnPOnline -Url $SiteUrl -Tenant $Tenant -ClientId $Authentication.ClientId `
+                    -Thumbprint $Authentication.CertificateThumbprint -ReturnConnection -ErrorAction Stop
+            }
+            Invoke-CleanupActivity -Message 'Validando acesso as bibliotecas...' -Action {
+                $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+                $null = Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $FolderServerRelativeUrl -Connection $connection
+            }
             return $connection
         } catch {
             if ($_.Exception.Message -notmatch 'AADSTS700027' -or $attempt -eq $MaxAttempts) { throw }
             Write-Warning "O servico de autenticacao ainda nao reconheceu a chave. Nova tentativa $($attempt + 1) de $MaxAttempts em $DelaySeconds segundos, usando o mesmo certificado."
-            Start-Sleep -Seconds $DelaySeconds
+            Invoke-CleanupActivity -Message 'Aguardando propagacao do certificado...' -Action { Start-Sleep -Seconds $DelaySeconds }
         }
     }
 }

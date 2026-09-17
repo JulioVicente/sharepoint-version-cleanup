@@ -89,10 +89,12 @@ function Write-AuditEvent {
 
 function Invoke-PnPRequest {
     param([scriptblock]$Operation)
+    Invoke-CleanupActivity -Message 'Processando solicitacao SharePoint...' -Action {
     Invoke-WithRetry -Operation $Operation -Settings $config.Retry -OnRetry {
         param($retry)
         Write-AuditEvent -Event 'RequestRetry' -Outcome 'Retrying' -ErrorMessage $retry.Error -Details $retry
         Write-Warning "Falha temporaria; nova tentativa $($retry.Attempt) em $($retry.DelaySeconds) segundos."
+    }
     }
 }
 function Save-Checkpoint([string]$FileUrl) {
