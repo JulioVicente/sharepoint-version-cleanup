@@ -31,6 +31,30 @@ function Set-CleanupServiceAcl {
     Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
 }
 
+function Set-CleanupCngKeyAcl {
+    param($Key)
+    # UniqueName does not identify a filesystem directory. Let the KSP locate
+    # the persisted key, including legacy keys exposed through CNG.
+    $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new('D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)')
+    $bytes = [byte[]]::new($descriptor.BinaryLength)
+    $descriptor.GetBinaryForm($bytes,0)
+    # DACL_SECURITY_INFORMATION | NCRYPT_PERSIST_FLAG; leave owner/SACL intact.
+    $options = [Security.Cryptography.CngPropertyOptions](-2147483644)
+    try {
+        $Key.SetProperty([Security.Cryptography.CngProperty]::new('Security Descr',$bytes,$options))
+        $actual = $Key.GetProperty('Security Descr',[Security.Cryptography.CngPropertyOptions]4).GetValue()
+        $readback = [Security.AccessControl.RawSecurityDescriptor]::new($actual,0)
+        $serviceRules = @($readback.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq 'S-1-5-19' })
+        # Providers may map GENERIC_READ to FILE_GENERIC_READ.
+        if ($serviceRules.Count -ne 1 -or $serviceRules[0].AceQualifier -ne 'AccessAllowed' -or
+            $serviceRules[0].AccessMask -notin @(-2147483648,1179785)) {
+            throw 'A releitura da chave nao confirmou acesso de leitura para LOCAL SERVICE.'
+        }
+    } catch {
+        throw "Nao foi possivel preparar a chave privada para LOCAL SERVICE pelo provedor criptografico: $($_.Exception.Message)"
+    }
+}
+
 function Install-CleanupServiceCertificate {
     param([ValidatePattern('^[a-fA-F0-9]{40}$')][string]$Thumbprint)
     $certificate = Get-Item -LiteralPath "Cert:\LocalMachine\My\$Thumbprint" -ErrorAction SilentlyContinue
@@ -57,11 +81,12 @@ function Install-CleanupServiceCertificate {
     $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
     try {
         if ($rsa -is [Security.Cryptography.RSACng] -and $rsa.Key.IsMachineKey) {
-            $keyPath = Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $rsa.Key.UniqueName)
+            Set-CleanupCngKeyAcl -Key $rsa.Key
         } elseif ($rsa -is [Security.Cryptography.RSACryptoServiceProvider] -and $rsa.CspKeyContainerInfo.MachineKeyStore) {
             $keyPath = Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $rsa.CspKeyContainerInfo.UniqueKeyContainerName)
+            if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw "Arquivo da chave CAPI nao localizado: $keyPath" }
+            Set-CleanupServiceAcl -Path $keyPath -ServiceRights Read
         } else { throw 'Provedor da chave privada nao suportado para agendamento sem senha.' }
-        Set-CleanupServiceAcl -Path $keyPath -ServiceRights Read
     } finally { if ($rsa) { $rsa.Dispose() } }
     return $certificate
 }

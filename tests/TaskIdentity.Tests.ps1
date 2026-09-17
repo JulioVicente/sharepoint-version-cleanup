@@ -115,3 +115,42 @@ Describe 'Teste sob a identidade de servico' {
         Should -Invoke Unregister-ScheduledTask -Times 1
     }
 }
+Describe 'Permissoes da chave CNG pelo provedor' {
+    BeforeEach {
+        $key = [pscustomobject]@{Saved=$null;Failure=$false;Mismatch=$false}
+        $key | Add-Member ScriptMethod SetProperty {
+            param($property)
+            if ($this.Failure) { throw 'provider unavailable' }
+            $this.Saved = $property
+        }
+        $key | Add-Member ScriptMethod GetProperty {
+            param($name,$options)
+            if ($name -ne 'Security Descr' -or [int]$options -ne 4) { throw 'flags incorretas' }
+            if ($this.Mismatch) {
+                $sd = [Security.AccessControl.RawSecurityDescriptor]::new('D:(A;;GA;;;LS)')
+                $bytes = [byte[]]::new($sd.BinaryLength)
+                $sd.GetBinaryForm($bytes,0)
+                return [Security.Cryptography.CngProperty]::new($name,$bytes,$options)
+            }
+            return $this.Saved
+        }
+        Mock Set-CleanupServiceAcl { throw 'Nao deve procurar arquivo CNG' }
+    }
+    It 'persiste a DACL sem depender do caminho ou UniqueName' {
+        Set-CleanupCngKeyAcl -Key $key
+        $key.Saved.Name | Should -Be 'Security Descr'
+        [int]$key.Saved.Options | Should -Be -2147483644
+        $sd = [Security.AccessControl.RawSecurityDescriptor]::new($key.Saved.GetValue(),0)
+        $sd.DiscretionaryAcl.Count | Should -Be 3
+        $sd.GetSddlForm([Security.AccessControl.AccessControlSections]::Access) | Should -Be 'D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)'
+        Should -Invoke Set-CleanupServiceAcl -Times 0
+    }
+    It 'recusa releitura que concede escrita a conta de servico' {
+        $key.Mismatch = $true
+        { Set-CleanupCngKeyAcl -Key $key } | Should -Throw '*nao confirmou*'
+    }
+    It 'interrompe com diagnostico especifico se o provedor recusar a ACL' {
+        $key.Failure = $true
+        { Set-CleanupCngKeyAcl -Key $key } | Should -Throw '*provider unavailable*'
+    }
+}
