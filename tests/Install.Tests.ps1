@@ -6,6 +6,56 @@ BeforeAll {
     . (Join-Path $root 'Install.ps1') -WhatIf
     . (Join-Path $root 'scripts/Configuration.ps1')
 }
+
+Describe 'Parametros da simulacao e do piloto no wizard' {
+    BeforeEach {
+        $installation = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        $scriptDirectory = Join-Path $installation 'scripts'
+        New-Item -ItemType Directory -Path $scriptDirectory -Force | Out-Null
+        $configPath = Join-Path $installation 'config/config.json'
+        $callLog = Join-Path $scriptDirectory 'calls.jsonl'
+        # Optional fixture parameters ensure a regression fails assertions instead of prompting.
+        @'
+[CmdletBinding()]
+param([string]$ConfigPath,[string]$SiteUrl,[string]$FolderServerRelativeUrl,[switch]$PassThru,[switch]$Apply)
+$PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScriptRoot 'calls.jsonl')
+[pscustomobject]@{
+    Success=$true; VersionsEligible=1; VersionsDeleted=[int][bool]$Apply; FilesSkipped=0
+    FilesProcessed=1; FilesUnchanged=0; BytesEligible=1; BytesFreed=[int][bool]$Apply
+    ReportPath='test-report.json'; Warnings=@()
+}
+'@ | Set-Content (Join-Path $scriptDirectory 'cleanup-versions.ps1')
+        $site = 'https://contoso.sharepoint.com/sites/piloto'
+        Mock Read-CleanupConfiguration { @{Sites=@($site);FolderScopes=@{$site='/sites/piloto/teste03'};VersionsToKeep=10} }
+        Mock Read-YesNo { $true }
+    }
+    It 'passa ConfigPath site pasta e PassThru nas duas chamadas e Apply so no piloto' {
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $calls = @(Get-Content $callLog | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+        $calls.Count | Should -Be 2
+        foreach ($call in $calls) {
+            $call.ConfigPath | Should -Be $configPath
+            $call.SiteUrl | Should -Be $site
+            $call.FolderServerRelativeUrl | Should -Be '/sites/piloto/teste03'
+            $call.PassThru | Should -BeTrue
+        }
+        $calls[0].ContainsKey('Apply') | Should -BeFalse
+        $calls[1].Apply | Should -BeTrue
+        $approved | Should -Be @($site)
+    }
+    It 'passa ConfigPath sem pasta e nao aplica sem aprovacao' {
+        Mock Read-CleanupConfiguration { @{Sites=@($site);FolderScopes=@{$site=''};VersionsToKeep=10} }
+        Mock Read-YesNo { param($Prompt) $Prompt -eq 'Executar a simulacao agora?' }
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $calls = @(Get-Content $callLog | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+        $calls.Count | Should -Be 1
+        $calls[0].ConfigPath | Should -Be $configPath
+        $calls[0].SiteUrl | Should -Be $site
+        $calls[0].ContainsKey('FolderServerRelativeUrl') | Should -BeFalse
+        $calls[0].ContainsKey('Apply') | Should -BeFalse
+        $approved.Count | Should -Be 0
+    }
+}
 Describe 'Installer' {
     It 'WhatIf nao escreve nem pergunta nem instala' {
         Mock Read-Host { throw 'Nao deve perguntar' }
