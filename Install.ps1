@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.2',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.3',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -233,15 +233,27 @@ function Find-CleanupApplication {
     Invoke-SetupGraph -Path ('applications/{0}?$select=id,appId,displayName,keyCredentials,requiredResourceAccess' -f $apps[$index].id)
 }
 
+function ConvertTo-CleanupUtcDate {
+    param($Value)
+    if ($Value -is [datetimeoffset]) { return $Value.UtcDateTime }
+    if ($Value -is [datetime]) {
+        if ($Value.Kind -eq [DateTimeKind]::Unspecified) { return [datetime]::SpecifyKind($Value, [DateTimeKind]::Utc) }
+        return $Value.ToUniversalTime()
+    }
+    return [datetimeoffset]::Parse([string]$Value, [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::AssumeUniversal).UtcDateTime
+}
+
 function Resolve-CleanupCertificate {
     param([hashtable]$Application, [string]$CertificateDirectory)
     $now = Get-Date
+    $nowUtc = $now.ToUniversalTime()
     $thumbprints = @($Application.keyCredentials | Where-Object {
         $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and $_.customKeyIdentifier -and
-        [datetime]$_.startDateTime -le $now -and [datetime]$_.endDateTime -gt $now
+        (ConvertTo-CleanupUtcDate $_.startDateTime) -le $nowUtc -and (ConvertTo-CleanupUtcDate $_.endDateTime) -gt $nowUtc
     } | ForEach-Object { [Convert]::ToHexString([Convert]::FromBase64String($_.customKeyIdentifier)) })
     $certificate = Get-ChildItem Cert:\CurrentUser\My | Where-Object {
-        $_.Thumbprint -in $thumbprints -and $_.HasPrivateKey -and $_.NotAfter -gt $now -and $_.NotBefore -le $now
+        $_.Thumbprint -in $thumbprints -and $_.HasPrivateKey -and $_.NotAfter.ToUniversalTime() -gt $nowUtc -and $_.NotBefore.ToUniversalTime() -le $nowUtc
     } | Sort-Object NotAfter -Descending | Select-Object -First 1
     if ($certificate) {
         Write-Host 'Certificado local associado ao aplicativo identificado automaticamente.'
@@ -281,8 +293,8 @@ function Confirm-CleanupCertificateRegistration {
     for ($attempt = 1; $attempt -le 4; $attempt++) {
         $registered = Invoke-SetupGraph -Path ('applications/{0}?$select=appId,keyCredentials' -f $ApplicationObjectId)
         $found = @($registered.keyCredentials | Where-Object {
-            $_.customKeyIdentifier -and $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and
-            [Convert]::ToHexString([Convert]::FromBase64String($_.customKeyIdentifier)) -eq $Thumbprint
+            $_['key'] -and $_.type -eq 'AsymmetricX509Cert' -and $_.usage -eq 'Verify' -and
+            [Convert]::ToHexString([Security.Cryptography.SHA1]::HashData([Convert]::FromBase64String($_.key))) -eq $Thumbprint
         })
         if ($found.Count -gt 0) {
             Write-Host "Certificado $Thumbprint confirmado no registro do aplicativo."
@@ -291,6 +303,23 @@ function Confirm-CleanupCertificateRegistration {
         if ($attempt -lt 4) { Start-Sleep -Seconds 2 }
     }
     throw "Certificado $Thumbprint nao confirmado no aplicativo apos a gravacao. Revise Certificados e segredos; conceder consentimento de API nao corrige uma chave ausente."
+}
+
+function Connect-CleanupSite {
+    param([string]$SiteUrl, [string]$Tenant, [hashtable]$Authentication,
+        [ValidateRange(1,12)][int]$MaxAttempts = 6, [ValidateRange(0,30)][int]$DelaySeconds = 10)
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            $connection = Connect-PnPOnline -Url $SiteUrl -Tenant $Tenant -ClientId $Authentication.ClientId `
+                -Thumbprint $Authentication.CertificateThumbprint -ReturnConnection -ErrorAction Stop
+            $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+            return $connection
+        } catch {
+            if ($_.Exception.Message -notmatch 'AADSTS700027' -or $attempt -eq $MaxAttempts) { throw }
+            Write-Warning "O servico de autenticacao ainda nao reconheceu a chave. Nova tentativa $($attempt + 1) de $MaxAttempts em $DelaySeconds segundos, usando o mesmo certificado."
+            Start-Sleep -Seconds $DelaySeconds
+        }
+    }
 }
 
 function Set-CleanupApplicationPermissions {
@@ -551,8 +580,7 @@ function New-Configuration {
     foreach ($site in $sites) {
         while ($true) {
             try {
-                $connection = Connect-PnPOnline -Url $site -Tenant $tenant -ClientId $auth.ClientId -Thumbprint $auth.CertificateThumbprint -ReturnConnection -ErrorAction Stop
-                $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+                $null = Connect-CleanupSite -SiteUrl $site -Tenant $tenant -Authentication $auth
                 break
             } catch {
                 Write-Warning "Acesso ainda indisponivel: $($_.Exception.Message)"

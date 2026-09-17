@@ -69,3 +69,9 @@ Os campos são validados assim que os dados necessários ficam disponíveis. Sit
 Na v1.3.2, o assistente consulta keyCredentials para confirmar o certificado antes de usá-lo. Isso não garante propagação imediata ao serviço de tokens. AADSTS700027 indica certificado não reconhecido: confira Certificados e segredos, aplicativo/tenant e propagação da chave. Repetir consentimento de API não registra um certificado.
 
 HTTP 400 / BadRequest com parâmetro Message ausente indica um pedido de email inválido, não falta de Mail.Send. O envio serializa uma vez e transmite bytes JSON UTF-8 diretamente ao endpoint sendMail com token Graph obtido por certificado. Erros 400 encerram a tentativa com o diagnóstico original, sem pedir novo consentimento. HTTP 403 continua orientando verificar Mail.Send, consentimento e restrições da caixa no Exchange Online.
+
+## Certificados recentes e fusos horários (v1.3.3)
+
+A validade retornada pelo Graph pode chegar como DateTime UTC, DateTimeOffset ou texto ISO. A seleção agora normaliza os instantes para UTC antes da comparação com a validade local; isso corrige o descarte de certificados recentes causado pela comparação direta de UTC com horário local. O certificado precisa continuar válido e ter chave privada.
+
+A confirmação remota compara o hash da chave pública real (campo key), não apenas customKeyIdentifier. Se a autenticação retornar AADSTS700027, tenta até seis vezes, com dez segundos de intervalo, sempre usando a mesma chave. Outras falhas não são tratadas como propagação. Se o aplicativo inteiro tiver sido apagado no Entra, a próxima execução criará outro Client ID e precisará de novo consentimento. Essa recriação também exigirá associar um certificado ao novo registro.

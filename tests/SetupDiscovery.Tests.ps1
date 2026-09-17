@@ -285,7 +285,8 @@ Describe 'Validacao imediata dos campos' {
 
 Describe 'Confirmacao do certificado registrado' {
     It 'confirma a chave pela consulta do aplicativo e nao pede thumbprint' {
-        Mock Invoke-SetupGraph { @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb))})} }
+        $thumb = [Convert]::ToHexString([Security.Cryptography.SHA1]::HashData([byte[]]@(1,2,3)))
+        Mock Invoke-SetupGraph { @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';key='AQID';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb))})} }
         Mock Start-Sleep {}
         Confirm-CleanupCertificateRegistration -ApplicationObjectId 'object-id' -Thumbprint $thumb
         Should -Invoke Invoke-SetupGraph -Times 1 -ParameterFilter { $Path -eq 'applications/object-id?$select=appId,keyCredentials' }
@@ -297,5 +298,60 @@ Describe 'Confirmacao do certificado registrado' {
         { Confirm-CleanupCertificateRegistration -ApplicationObjectId 'object-id' -Thumbprint $thumb } | Should -Throw '*Certificados e segredos*'
         Should -Invoke Invoke-SetupGraph -Times 4
         Should -Invoke Start-Sleep -Times 3
+    }
+}
+
+Describe 'Validade UTC e propagacao de certificados' {
+    It 'compara instantes UTC e offsets locais sem deslocar o inicio da validade' {
+        $expected = [datetime]::SpecifyKind([datetime]'2026-09-17T18:48:25', [DateTimeKind]::Utc)
+        ConvertTo-CleanupUtcDate ([datetimeoffset]'2026-09-17T15:48:25-03:00') | Should -Be $expected
+        ConvertTo-CleanupUtcDate '2026-09-17T18:48:25Z' | Should -Be $expected
+        ConvertTo-CleanupUtcDate $expected | Should -Be $expected
+        (ConvertTo-CleanupUtcDate $expected).Kind | Should -Be ([DateTimeKind]::Utc)
+    }
+    It 'reutiliza certificado recente com datas UTC materializadas pelo SDK' {
+        $start = [datetime]::UtcNow.AddMinutes(-5)
+        $end = [datetime]::UtcNow.AddYears(1)
+        Mock Get-ChildItem { @{Thumbprint=$thumb;HasPrivateKey=$true;NotBefore=$start.ToLocalTime();NotAfter=$end.ToLocalTime()} }
+        Mock Read-Host { throw 'Nao deve gerar outra chave' }
+        $app = @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb));startDateTime=$start;endDateTime=$end})}
+        (Resolve-CleanupCertificate -Application $app -CertificateDirectory $TestDrive).Thumbprint | Should -Be $thumb
+        Should -Invoke Read-Host -Times 0
+    }
+    It 'nao confirma chave publica divergente apesar de identificador igual' {
+        Mock Invoke-SetupGraph { @{keyCredentials=@(@{type='AsymmetricX509Cert';usage='Verify';key='AQID';customKeyIdentifier=[Convert]::ToBase64String([Convert]::FromHexString($thumb))})} }
+        Mock Start-Sleep {}
+        { Confirm-CleanupCertificateRegistration -ApplicationObjectId 'object-id' -Thumbprint $thumb } | Should -Throw '*nao confirmado*'
+    }
+    It 'repete autenticacao com o mesmo certificado durante propagacao' {
+        $script:authAttempts=0
+        Mock Connect-PnPOnline {
+            $script:authAttempts++
+            if ($script:authAttempts -lt 3) { throw 'AADSTS700027: key not found' }
+            'ready-connection'
+        }
+        Mock Get-PnPWeb {}
+        Mock Start-Sleep {}
+        Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} |
+            Should -Be 'ready-connection'
+        Should -Invoke Connect-PnPOnline -Times 3 -ParameterFilter { $ClientId -eq $appId -and $Thumbprint -eq $thumb }
+        Should -Invoke Start-Sleep -Times 2
+        Should -Invoke Get-PnPWeb -Times 1
+    }
+    It 'encerra automaticamente apos limite de tentativas da chave' {
+        Mock Connect-PnPOnline { throw 'AADSTS700027: key not found' }
+        Mock Start-Sleep {}
+        { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} -MaxAttempts 3 } |
+            Should -Throw '*AADSTS700027*'
+        Should -Invoke Connect-PnPOnline -Times 3
+        Should -Invoke Start-Sleep -Times 2
+    }
+    It 'nao repete automaticamente negacao de acesso como se fosse propagacao de chave' {
+        Mock Connect-PnPOnline { throw '403 Forbidden' }
+        Mock Start-Sleep {}
+        { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} } |
+            Should -Throw '*403*'
+        Should -Invoke Connect-PnPOnline -Times 1
+        Should -Invoke Start-Sleep -Times 0
     }
 }
