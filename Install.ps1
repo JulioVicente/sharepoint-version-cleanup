@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.6',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.3.7',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -700,7 +700,11 @@ function Invoke-SetupValidation {
                 break
             } catch {
                 Write-Host "Nao foi possivel concluir: $($_.Exception.Message)" -ForegroundColor Yellow
-                Write-Host "Revise consentimento, certificado, acesso e configuracao em: $ConfigPath"
+                if ($_.Exception.Message -match 'Checkpoint') {
+                    Write-Host 'A falha esta no estado local de retomada. Confira o checkpoint indicado no erro; alterar consentimento ou certificado nao resolve esse problema.'
+                } else {
+                    Write-Host "Confira o erro original acima e a configuracao em: $ConfigPath"
+                }
                 if (-not (Read-YesNo 'Apos corrigir, deseja tentar novamente?')) { throw }
             }
         }

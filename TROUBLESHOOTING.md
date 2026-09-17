@@ -83,3 +83,7 @@ O consentimento de Sites.Selected no Entra nao comprova a concessao ao site. O a
 Com pasta definida, consulta diretamente sua biblioteca. Sem pasta, consulta as bibliotecas do site. A consulta evita solicitar todas as propriedades de RootFolder e preserva o erro original com o site e o escopo. Nao amplia permissoes automaticamente para FullControl. Se a negacao persistir com a concessao confirmada, examine propagacao, restricoes das bibliotecas e politicas do tenant. Envio aceito pelo Graph comprova somente o envio ao servico de email, nao acesso ao SharePoint.
 
 Periodicidade no assistente: D para diaria, S para semanal (padrao S). No JSON, Schedule.Frequency continua diaria/semanal; nomes de campos e valores Graph/true/false nao devem ser traduzidos.
+
+## v1.3.7: checkpoint de uma politica anterior
+
+Ao alterar a quantidade de versoes mantidas ou a idade minima, o checkpoint antigo e preservado como `.json.policy-<execucao>.bak` na pasta state. A nova execucao reavalia todos os arquivos com a politica atual, sem reutilizar a lista de concluidos anterior. Isso tambem vale para a simulacao; ela continua sem excluir versoes. Checkpoints de outro site, modo ou incompletos continuam sendo recusados. Uma falha de checkpoint e estado local, nao falta de consentimento no Entra.

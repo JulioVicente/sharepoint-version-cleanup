@@ -1,6 +1,6 @@
 #requires -Version 7.4
 [CmdletBinding()]
-param([string]$Version = 'v1.3.6')
+param([string]$Version = 'v1.3.7')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $paths = @('Install.ps1','bootstrap.ps1','config/config.example.json','templates/email-template.html')

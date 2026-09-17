@@ -142,11 +142,20 @@ try {
     if (Test-Path -LiteralPath $checkpointPath) {
         $savedCheckpoint = Get-Content -LiteralPath $checkpointPath -Raw | ConvertFrom-Json -AsHashtable
         if ($savedCheckpoint.SiteUrl -ne $SiteUrl -or $savedCheckpoint.Apply -ne [bool]$Apply -or
-            $savedCheckpoint.VersionsToKeep -ne $config.VersionsToKeep -or -not $savedCheckpoint.ContainsKey('CompletedFiles')) {
-            throw 'Checkpoint incompativel com o site, modo ou retencao atual. Arquive-o antes de reiniciar.'
+            -not $savedCheckpoint.ContainsKey('VersionsToKeep') -or -not $savedCheckpoint.ContainsKey('CompletedFiles')) {
+            throw "Checkpoint incompativel com o site ou modo, ou incompleto: $checkpointPath. Revise esse arquivo antes de reiniciar."
         }
-        if ($savedCheckpoint.ContainsKey('PolicyKey') -and $savedCheckpoint.PolicyKey -ne $policyKey) { throw 'Checkpoint incompativel com a politica de idade/retencao.' }
-        foreach ($url in $savedCheckpoint.CompletedFiles) { $completed.Add([string]$url) | Out-Null }
+        if ($savedCheckpoint.VersionsToKeep -ne $config.VersionsToKeep -or
+            ($savedCheckpoint.ContainsKey('PolicyKey') -and $savedCheckpoint.PolicyKey -ne $policyKey)) {
+            $archivePath = "$checkpointPath.policy-$runId.bak"
+            [IO.File]::Move($checkpointPath, $archivePath)
+            Write-Warning "A politica de retencao mudou. Checkpoint anterior preservado em $archivePath. Todos os arquivos serao reavaliados com a politica atual."
+            Write-AuditEvent -Event 'CheckpointArchived' -Outcome 'Success' -Reason 'Politica de retencao ou idade alterada.' -Details @{
+                ArchivePath = $archivePath; PreviousVersionsToKeep = $savedCheckpoint.VersionsToKeep; CurrentPolicyKey = $policyKey
+            }
+        } else {
+            foreach ($url in $savedCheckpoint.CompletedFiles) { $completed.Add([string]$url) | Out-Null }
+        }
     }
     $scannedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $libraries = Invoke-PnPRequest { Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $scopeFolder -Connection $connection }

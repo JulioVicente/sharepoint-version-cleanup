@@ -85,6 +85,38 @@ Describe 'cleanup-versions.ps1' {
         Assert-MockCalled Remove-PnPFileVersion 1 -Scope It -ParameterFilter { $Identity -eq 1 }
     }
 
+    It 'arquiva checkpoint e reavalia arquivos quando a politica muda: <Case>' -ForEach @(
+        @{Case='retencao';PreviousKeep=5;PreviousPolicy='5|30';DoApply=$false},
+        @{Case='idade';PreviousKeep=2;PreviousPolicy='2|1';DoApply=$false},
+        @{Case='producao';PreviousKeep=5;PreviousPolicy='5|30';DoApply=$true}
+    ) {
+        New-Item -ItemType Directory -Force -Path $state | Out-Null
+        $siteUrl = 'https://contoso.sharepoint.com/sites/test'
+        $siteKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($siteUrl))).Substring(0,16)
+        $mode = if ($DoApply) { 'apply' } else { 'simulation' }
+        $checkpoint = Join-Path $state "checkpoint-$siteKey-$mode-E3B0C442.json"
+        @{ SiteUrl=$siteUrl;Apply=$DoApply;VersionsToKeep=$PreviousKeep;PolicyKey=$PreviousPolicy;CompletedFiles=@('/docs/a.docx') } | ConvertTo-Json | Set-Content $checkpoint
+        $before = Get-FileHash $checkpoint
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl $siteUrl -Apply:$DoApply -PassThru
+        $r.FilesProcessed | Should -Be 1
+        $archives = @(Get-ChildItem $state -Filter '*.bak')
+        $archives.Count | Should -Be 1
+        (Get-FileHash $archives[0].FullName).Hash | Should -Be $before.Hash
+        if (-not $DoApply) { Should -Invoke Remove-PnPFileVersion -Times 0 }
+    }
+
+    It 'preserva e recusa checkpoint de outro site' {
+        New-Item -ItemType Directory -Force -Path $state | Out-Null
+        $siteUrl = 'https://contoso.sharepoint.com/sites/test'
+        $siteKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($siteUrl))).Substring(0,16)
+        $checkpoint = Join-Path $state "checkpoint-$siteKey-simulation-E3B0C442.json"
+        @{SiteUrl='https://contoso.sharepoint.com/sites/outro';Apply=$false;VersionsToKeep=5;CompletedFiles=@()} | ConvertTo-Json | Set-Content $checkpoint
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl $siteUrl } | Should -Throw '*Checkpoint incompativel*'
+        Test-Path $checkpoint | Should -BeTrue
+        @(Get-ChildItem $state -Filter '*.bak').Count | Should -Be 0
+        Should -Invoke Get-PnPList -Times 0
+    }
+
     It 'retoma depois do arquivo registrado no checkpoint' {
         New-Item -ItemType Directory -Force -Path $state | Out-Null
         $siteUrl = 'https://contoso.sharepoint.com/sites/test'
