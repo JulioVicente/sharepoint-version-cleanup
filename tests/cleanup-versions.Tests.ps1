@@ -23,7 +23,7 @@ Describe 'cleanup-versions.ps1' {
         # Declara os comandos para que esta suite rode mesmo sem PnP.PowerShell instalado.
         function global:Connect-PnPOnline { param($Url,$ClientId,$Tenant,$Thumbprint,[switch]$ReturnConnection) }
         function global:Get-PnPList { param($Connection,$Includes,$Identity,[switch]$ThrowExceptionIfListNotFound) }
-        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection) }
+        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection,$FolderServerRelativeUrl) }
         function global:Get-PnPFolder { param($Url,$Connection) }
         function global:Get-PnPFile { param($Url,[switch]$AsFileObject,$Connection) }
         function global:Get-PnPProperty { param($ClientObject,$Property,$Connection) }
@@ -148,6 +148,7 @@ Describe 'cleanup-versions.ps1' {
         Assert-MockCalled Get-PnPFile 0 -Scope It -ParameterFilter { $Url -like '*docs-outro*' }
         Should -Invoke Get-PnPList -Times 1 -ParameterFilter { $Identity -eq '/sites/test/docs' -and $ThrowExceptionIfListNotFound }
         Should -Invoke Get-PnPList -Times 0 -ParameterFilter { -not $Identity }
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter { $FolderServerRelativeUrl -eq '/sites/test/docs' }
     }
 
     It 'ignora checkout e rotulos mas aceita compliance flags zero' {
@@ -210,6 +211,8 @@ Describe 'cleanup-versions.ps1' {
         $r.FilesUnchanged | Should -Be 1
         $r.VersionsDeleted | Should -Be 0
         Assert-MockCalled Get-PnPFileVersion 1 -Scope It
+        Assert-MockCalled Get-PnPFile 1 -Scope It
+        Assert-MockCalled Get-PnPProperty 1 -Scope It
         Mock Get-PnPListItem { @{ FSObjType=0; FileRef='/docs/a.docx'; Modified=[datetime]'2026-09-02'; UniqueId='file-a'; _UIVersionString='6.0' } }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         $r.FilesProcessed | Should -Be 1

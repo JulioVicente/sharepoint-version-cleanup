@@ -88,8 +88,8 @@ function Write-AuditEvent {
 }
 
 function Invoke-PnPRequest {
-    param([scriptblock]$Operation)
-    Invoke-CleanupActivity -Message 'Processando solicitacao SharePoint...' -Action {
+    param([scriptblock]$Operation, [string]$Activity = 'Processando solicitacao SharePoint...')
+    Invoke-CleanupActivity -Message $Activity -Action {
     Invoke-WithRetry -Operation $Operation -Settings $config.Retry -OnRetry {
         param($retry)
         Write-AuditEvent -Event 'RequestRetry' -Outcome 'Retrying' -ErrorMessage $retry.Error -Details $retry
@@ -162,13 +162,23 @@ try {
         Write-Host "Biblioteca: $($library.Title)"
         Write-AuditEvent -Event 'LibraryScanned' -Outcome 'Started' -FileUrl $libraryRoot -Details @{ Library = $library.Title; LibraryId = [string]$library.Id }
         $sampleCandidates = [Collections.Generic.List[object]]::new()
-        $items = Invoke-PnPRequest { Get-PnPListItem -List $library.Id -PageSize 500 -Fields 'FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size' -Connection $connection }
+        $listParameters = @{
+            List = $library.Id; PageSize = 500; Connection = $connection
+            Fields = @('FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size')
+        }
+        if ($scopeFolder) { $listParameters.FolderServerRelativeUrl = $scopeFolder }
+        $items = @(Invoke-PnPRequest { Get-PnPListItem @listParameters } -Activity 'Lendo itens da biblioteca (paginas de 500)...')
+        $fileCount = @($items | Where-Object { [int]$_['FSObjType'] -eq 0 -and (-not $scopeFolder -or ([string]$_['FileRef']).StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) }).Count
+        $fileIndex = 0
+        Write-Host "Itens recebidos: $($items.Count) | Arquivos no escopo: $fileCount"
         foreach ($item in $items) {
             $fileUrl = [string]$item['FileRef']
             if ($scopeFolder -and -not $fileUrl.StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) { continue }
             $directory = if ([int]$item['FSObjType'] -ne 0) { $fileUrl } else { $fileUrl.Substring(0, $fileUrl.LastIndexOf('/')) }
             if ($scannedDirectories.Add($directory)) { Write-AuditEvent -Event 'DirectoryScanned' -Outcome 'Success' -FileUrl $directory }
             if ([int]$item['FSObjType'] -ne 0) { continue }
+            $fileIndex++
+            Write-Host "Arquivo $fileIndex de $fileCount : $fileUrl"
             if ($completed.Contains($fileUrl)) {
                 Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Concluido anteriormente neste checkpoint.'
                 continue
@@ -185,16 +195,6 @@ try {
                     Save-Checkpoint $fileUrl
                     continue
                 }
-                $file = Invoke-PnPRequest { Get-PnPFile -Url $fileUrl -AsFileObject -Connection $connection }
-                Invoke-PnPRequest { Get-PnPProperty -ClientObject $file -Property CheckOutType -Connection $connection } | Out-Null
-                if ([string]$file.CheckOutType -ne 'None') {
-                    $report.FilesSkipped++
-                    $report.Warnings.Add("Arquivo em checkout ignorado: $fileUrl")
-                    Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Arquivo em checkout.'
-                    Save-Checkpoint $fileUrl
-                    continue
-                }
-
                 # A persistent signature avoids rereading version history for unchanged files.
                 # Missing metadata means process normally, never assume unchanged.
                 $signature = ''
@@ -210,8 +210,18 @@ try {
                     continue
                 }
 
+                $file = Invoke-PnPRequest { Get-PnPFile -Url $fileUrl -AsFileObject -Connection $connection } -Activity 'Verificando arquivo e checkout...'
+                Invoke-PnPRequest { Get-PnPProperty -ClientObject $file -Property CheckOutType -Connection $connection } | Out-Null
+                if ([string]$file.CheckOutType -ne 'None') {
+                    $report.FilesSkipped++
+                    $report.Warnings.Add("Arquivo em checkout ignorado: $fileUrl")
+                    Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Arquivo em checkout.'
+                    Save-Checkpoint $fileUrl
+                    continue
+                }
+
                 # Keep N historical versions in addition to the current version.
-                $versions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $fileUrl -Connection $connection } |
+                $versions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $fileUrl -Connection $connection } -Activity 'Consultando historico de versoes...' |
                     Where-Object { -not ($_.PSObject.Properties.Name -contains 'IsCurrentVersion' -and $_.IsCurrentVersion) } |
                     Sort-Object Created, Id -Descending)
                 $excess = @($versions | Select-Object -Skip ([int]$config.VersionsToKeep))
