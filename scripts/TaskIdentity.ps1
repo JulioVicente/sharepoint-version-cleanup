@@ -48,7 +48,8 @@ function Set-CleanupCngKeyAcl {
         # Providers may map GENERIC_READ to FILE_GENERIC_READ.
         if ($serviceRules.Count -ne 1 -or $serviceRules[0].AceQualifier -ne 'AccessAllowed' -or
             $serviceRules[0].AccessMask -notin @(-2147483648,1179785)) {
-            throw 'A releitura da chave nao confirmou acesso de leitura para LOCAL SERVICE.'
+            $observed = $readback.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
+            throw "A releitura da chave nao confirmou acesso de leitura para LOCAL SERVICE. DACL recebida: $observed"
         }
     } catch {
         $cause = $_.Exception.GetBaseException()
