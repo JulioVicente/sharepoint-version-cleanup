@@ -18,6 +18,12 @@ Políticas de retenção, hold, rótulos ou permissões podem impedir exclusões
 
 Confira a identidade LOCAL SERVICE, certificado com chave privada em `Cert:\LocalMachine\My`, acesso a rede e permissoes das pastas locais. O instalador nao solicita senha pessoal e testa essa identidade antes de agendar. O computador precisa estar ligado. Confira gatilho, fuso local e historico do Agendador. Alterar `Schedule` no JSON nao atualiza o gatilho de uma tarefa existente.
 
+## Falha ao preparar a chave privada para LOCAL SERVICE
+
+`SetProperty: Parâmetro incorreto` na etapa `preparar e testar LOCAL SERVICE` pode ocorrer quando uma chave legada CAPI importada de PFX aparece como `RSACng` no .NET. O instalador atualizado consulta o provedor nativo do certificado: aplica a ACL no arquivo identificado pelo CSP para CAPI e usa `Security Descr` do provedor para CNG. Ambos os caminhos releem a permissão de LOCAL SERVICE.
+
+Execute novamente o bootstrap de `main` como Administrador, usando a mesma pasta de instalação e os valores sugeridos pelo assistente. O certificado válido existente pode ser reutilizado. Refazer consentimento no Entra não corrige essa falha local. Se persistir, o diagnóstico `SPVC-KEY-ACL` informa o certificado, código hexadecimal e causa original; confira permissões administrativas, disponibilidade da chave e compatibilidade do provedor. Chaves de hardware CAPI não são tratadas como arquivos de chave de software.
+
 ## Não remove versões
 
 Sem `-Apply`, a execução é simulação. `VersionsToKeep` preserva N versões históricas além da atual. Arquivos com apenas uma versão não têm histórico removível. Em execução incremental, arquivos sem alterações entram em `FilesUnchanged`. Confira `VersionsEligible`, `FilesSkipped` e `Warnings` no relatório.
@@ -36,6 +42,7 @@ A existência do arquivo `.lock` é normal; somente um handle aberto bloqueia ou
 | `SPVC-PERMISSION` | Confira consentimento, Sites.Selected e restrições do SharePoint. |
 | `SPVC-STORAGE` / `SPVC-REPORT` | Confira espaço, ACLs e caminhos; uma falha de relatório não substitui a causa original da limpeza. |
 | `SPVC-SERVICE` | Consulte o código hexadecimal do Agendador, executável e caminhos informados. |
+| `SPVC-KEY-ACL` | Execute o bootstrap atualizado como Administrador; confira o provedor, armazenamento da chave e erro local informado. |
 | `SPVC-INSTALL-BUSY` | Aguarde a instalação ou tarefa em andamento; confira permissões se não houver execução. |
 | `SPVC-ROLLBACK` / `SPVC-RECOVERY` | Preserve a pasta de backup. `recovery.json` mapeia arquivos e XML das tarefas. Recupere os arquivos antes de reativar tarefas; remova `.install-recovery.json` apenas após concluir. |
 

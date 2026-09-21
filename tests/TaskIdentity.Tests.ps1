@@ -139,7 +139,7 @@ Describe 'Permissoes da chave CNG pelo provedor' {
     It 'persiste a DACL sem depender do caminho ou UniqueName' {
         Set-CleanupCngKeyAcl -Key $key
         $key.Saved.Name | Should -Be 'Security Descr'
-        [int]$key.Saved.Options | Should -Be -2147483644
+        [int]$key.Saved.Options | Should -Be 4
         $sd = [Security.AccessControl.RawSecurityDescriptor]::new($key.Saved.GetValue(),0)
         $sd.DiscretionaryAcl.Count | Should -Be 3
         $sd.GetSddlForm([Security.AccessControl.AccessControlSections]::Access) | Should -Be 'D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)'
@@ -152,5 +152,52 @@ Describe 'Permissoes da chave CNG pelo provedor' {
     It 'interrompe com diagnostico especifico se o provedor recusar a ACL' {
         $key.Failure = $true
         { Set-CleanupCngKeyAcl -Key $key } | Should -Throw '*provider unavailable*'
+    }
+}
+
+Describe 'Provedor nativo da chave privada do certificado' {
+    BeforeEach {
+        $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new()
+        $provider = @{ProviderType=24;ProviderName='Microsoft Enhanced RSA and AES Cryptographic Provider';ContainerName='test';KeySpec=2;Flags=32}
+        Mock Get-CleanupCertificateKeyProvider { $provider }
+        Mock Get-CleanupCapiKeyInfo { @{MachineKeyStore=$true;HardwareDevice=$false;UniqueKeyContainerName='test-key'} }
+        Mock Test-Path { $true }
+        Mock Set-CleanupServiceAcl {}
+        Mock Set-CleanupCngKeyAcl { throw 'Nao pode enviar chave CAPI ao provedor CNG.' }
+        Mock Get-Acl {
+            $acl = [Security.AccessControl.FileSecurity]::new()
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-19'), 'Read', 'Allow'))
+            $acl
+        }
+    }
+    AfterEach { $certificate.Dispose() }
+    It 'usa o arquivo CAPI identificado pelo provedor nativo' {
+        Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate
+        Should -Invoke Set-CleanupServiceAcl -Times 1 -ParameterFilter { $Path -eq (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys\test-key') -and $ServiceRights -eq 'Read' }
+        Should -Invoke Set-CleanupCngKeyAcl -Times 0
+        Should -Invoke Get-Acl -Times 1
+    }
+    It 'recusa chave de usuario antes de alterar ACL de maquina' {
+        Mock Get-CleanupCapiKeyInfo { @{MachineKeyStore=$false;HardwareDevice=$false;UniqueKeyContainerName='test-key'} }
+        { Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate } | Should -Throw '*SPVC-KEY-ACL*armazenamento de maquina*'
+        Should -Invoke Set-CleanupServiceAcl -Times 0
+    }
+    It 'recusa caminho inesperado retornado como nome da chave' {
+        Mock Get-CleanupCapiKeyInfo { @{MachineKeyStore=$true;HardwareDevice=$false;UniqueKeyContainerName='..\other'} }
+        { Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate } | Should -Throw '*Identificador*invalido*'
+        Should -Invoke Set-CleanupServiceAcl -Times 0
+    }
+    It 'nao tenta outro arquivo quando o arquivo CAPI nao existe' {
+        Mock Test-Path { $false }
+        { Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate } | Should -Throw '*Arquivo da chave CAPI nao localizado*'
+        Should -Invoke Set-CleanupServiceAcl -Times 0
+    }
+    It 'recusa ACL CAPI que conceda escrita a LOCAL SERVICE' {
+        Mock Get-Acl {
+            $acl = [Security.AccessControl.FileSecurity]::new()
+            $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new('S-1-5-19'), 'FullControl', 'Allow'))
+            $acl
+        }
+        { Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate } | Should -Throw '*releitura*'
     }
 }

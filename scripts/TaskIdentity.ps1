@@ -34,12 +34,12 @@ function Set-CleanupServiceAcl {
 function Set-CleanupCngKeyAcl {
     param($Key)
     # UniqueName does not identify a filesystem directory. Let the KSP locate
-    # the persisted key, including legacy keys exposed through CNG.
+    # the persisted native CNG key. Legacy CAPI keys are handled separately.
     $descriptor = [Security.AccessControl.RawSecurityDescriptor]::new('D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;LS)')
     $bytes = [byte[]]::new($descriptor.BinaryLength)
     $descriptor.GetBinaryForm($bytes,0)
-    # DACL_SECURITY_INFORMATION | NCRYPT_PERSIST_FLAG; leave owner/SACL intact.
-    $options = [Security.Cryptography.CngPropertyOptions](-2147483644)
+    # Security Descr is a built-in property: request only DACL_SECURITY_INFORMATION.
+    $options = [Security.Cryptography.CngPropertyOptions]4
     try {
         $Key.SetProperty([Security.Cryptography.CngProperty]::new('Security Descr',$bytes,$options))
         $actual = $Key.GetProperty('Security Descr',[Security.Cryptography.CngPropertyOptions]4).GetValue()
@@ -51,7 +51,95 @@ function Set-CleanupCngKeyAcl {
             throw 'A releitura da chave nao confirmou acesso de leitura para LOCAL SERVICE.'
         }
     } catch {
-        throw "Nao foi possivel preparar a chave privada para LOCAL SERVICE pelo provedor criptografico: $($_.Exception.Message)"
+        $cause = $_.Exception.GetBaseException()
+        $provider = if ($Key.PSObject.Properties['Provider']) { [string]$Key.Provider } else { 'nao informado' }
+        $code = '0x{0:X8}' -f $cause.HResult
+        throw [InvalidOperationException]::new("[SPVC-KEY-ACL] Nao foi possivel preparar a chave privada para LOCAL SERVICE. Provedor CNG: '$provider'; codigo: $code. Verifique suporte a ACL e permissao administrativa local. Erro original: $($cause.Message)", $_.Exception)
+    }
+}
+
+function Get-CleanupCertificateKeyProvider {
+    param([Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    if (-not ('Spvc.CertificateKeyProvider' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+namespace Spvc {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct CertificateKeyProvider {
+        [MarshalAs(UnmanagedType.LPWStr)] public string ContainerName;
+        [MarshalAs(UnmanagedType.LPWStr)] public string ProviderName;
+        public uint ProviderType;
+        public uint Flags;
+        public uint ParameterCount;
+        public IntPtr Parameters;
+        public uint KeySpec;
+        [DllImport("crypt32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CertGetCertificateContextProperty(IntPtr context, uint property, IntPtr data, ref uint size);
+        public static CertificateKeyProvider Read(IntPtr context) {
+            const uint CERT_KEY_PROV_INFO_PROP_ID = 2;
+            uint size = 0;
+            if (!CertGetCertificateContextProperty(context, CERT_KEY_PROV_INFO_PROP_ID, IntPtr.Zero, ref size))
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            if (size < Marshal.SizeOf<CertificateKeyProvider>()) throw new InvalidOperationException("Informacao do provedor incompleta.");
+            IntPtr buffer = Marshal.AllocHGlobal(checked((int)size));
+            try {
+                if (!CertGetCertificateContextProperty(context, CERT_KEY_PROV_INFO_PROP_ID, buffer, ref size))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                return Marshal.PtrToStructure<CertificateKeyProvider>(buffer);
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
+    }
+}
+'@
+    }
+    try { return [Spvc.CertificateKeyProvider]::Read($Certificate.Handle) }
+    finally { [GC]::KeepAlive($Certificate) }
+}
+
+function Get-CleanupCapiKeyInfo {
+    param($Provider)
+    $parameters = [Security.Cryptography.CspParameters]::new([int]$Provider.ProviderType, $Provider.ProviderName, $Provider.ContainerName)
+    $parameters.KeyNumber = [int]$Provider.KeySpec
+    if ($Provider.Flags -band 0x20) { $parameters.Flags = [Security.Cryptography.CspProviderFlags]::UseMachineKeyStore }
+    return [Security.Cryptography.CspKeyContainerInfo]::new($parameters)
+}
+
+function Set-CleanupCertificatePrivateKeyAcl {
+    param([Security.Cryptography.X509Certificates.X509Certificate2]$Certificate)
+    try {
+        # GetRSAPrivateKey can return RSACng for a legacy CAPI key. Inspect the
+        # certificate's native provider metadata before choosing how to set its ACL.
+        $provider = Get-CleanupCertificateKeyProvider -Certificate $Certificate
+        if ($provider.ProviderType -ne 0) {
+            $info = Get-CleanupCapiKeyInfo -Provider $provider
+            if (-not $info.MachineKeyStore -or $info.HardwareDevice) { throw 'A chave CAPI deve estar no armazenamento de maquina e usar um provedor de software.' }
+            $uniqueName = $info.UniqueKeyContainerName
+            if (-not $uniqueName -or [IO.Path]::GetFileName($uniqueName) -ne $uniqueName -or $uniqueName -in '.', '..') { throw 'Identificador do arquivo da chave CAPI invalido.' }
+            $keyPath = Join-Path $env:ProgramData "Microsoft\Crypto\RSA\MachineKeys\$uniqueName"
+            if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw "Arquivo da chave CAPI nao localizado: $keyPath" }
+            Set-CleanupServiceAcl -Path $keyPath -ServiceRights Read
+            $acl = Get-Acl -LiteralPath $keyPath -ErrorAction Stop
+            $rules = @($acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier]) | Where-Object { $_.IdentityReference.Value -eq 'S-1-5-19' })
+            if ($rules.Count -ne 1 -or $rules[0].AccessControlType -ne 'Allow' -or
+                [int]$rules[0].FileSystemRights -notin @(131209,1179785)) { throw 'A releitura da chave CAPI nao confirmou leitura exclusiva para LOCAL SERVICE.' }
+            Write-Host "Permissao da chave CAPI validada: $($provider.ProviderName)."
+            return
+        }
+        $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+        try {
+            if ($rsa -isnot [Security.Cryptography.RSACng] -or -not $rsa.Key.IsMachineKey) { throw 'A chave CNG deve ser RSA e estar no armazenamento de maquina.' }
+            Set-CleanupCngKeyAcl -Key $rsa.Key
+            Write-Host "Permissao da chave CNG validada: $($provider.ProviderName)."
+        } finally { if ($rsa) { $rsa.Dispose() } }
+    } catch {
+        $cause = $_.Exception.GetBaseException()
+        $code = '0x{0:X8}' -f $cause.HResult
+        $thumbprint = 'indisponivel'
+        try { if ($Certificate) { $thumbprint = $Certificate.Thumbprint } } catch { }
+        throw [InvalidOperationException]::new("[SPVC-KEY-ACL] Falha local ao preparar a chave do certificado '$thumbprint' para LOCAL SERVICE ($code). Execute o bootstrap atualizado como Administrador. Confira o provedor e as permissoes locais; refazer consentimento no Entra nao corrige essa etapa. Erro original: $($_.Exception.Message)", $_.Exception)
     }
 }
 
@@ -78,16 +166,7 @@ function Install-CleanupServiceCertificate {
     if (-not $certificate.HasPrivateKey -or $certificate.NotAfter.ToUniversalTime() -le [datetime]::UtcNow -or $certificate.NotBefore.ToUniversalTime() -gt [datetime]::UtcNow) {
         throw 'Certificado de maquina sem chave privada ou fora da validade.'
     }
-    $rsa = [Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($certificate)
-    try {
-        if ($rsa -is [Security.Cryptography.RSACng] -and $rsa.Key.IsMachineKey) {
-            Set-CleanupCngKeyAcl -Key $rsa.Key
-        } elseif ($rsa -is [Security.Cryptography.RSACryptoServiceProvider] -and $rsa.CspKeyContainerInfo.MachineKeyStore) {
-            $keyPath = Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $rsa.CspKeyContainerInfo.UniqueKeyContainerName)
-            if (-not (Test-Path -LiteralPath $keyPath -PathType Leaf)) { throw "Arquivo da chave CAPI nao localizado: $keyPath" }
-            Set-CleanupServiceAcl -Path $keyPath -ServiceRights Read
-        } else { throw 'Provedor da chave privada nao suportado para agendamento sem senha.' }
-    } finally { if ($rsa) { $rsa.Dispose() } }
+    Set-CleanupCertificatePrivateKeyAcl -Certificate $certificate
     return $certificate
 }
 

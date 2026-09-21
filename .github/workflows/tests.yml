@@ -1,7 +1,7 @@
 name: Tests
 on:
   push:
-    branches: [main]
+    branches: [main, 'codex/**']
   pull_request:
 permissions:
   contents: read
@@ -25,3 +25,6 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: ./tests/Run-Tests.ps1
+      - name: Verify real Windows CAPI and CNG key ACLs
+        shell: pwsh
+        run: ./tests/Test-KeyAclIntegration.ps1 -MachineKey
