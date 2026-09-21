@@ -104,12 +104,12 @@ Describe 'Descoberta automatica no instalador' {
             if ($Prompt -match 'Client ID|Thumbprint|Dominio|Servidor SMTP|Porta SMTP|Senha SMTP|Ja possui') { throw "Pergunta desnecessaria: $Prompt" }
             return ''
         }
-        $cfg = New-Configuration -Destination 'C:\ProgramData\SharePointVersionCleanup'
+        $cfg = New-Configuration -Destination $TestDrive
         $cfg.Email.From | Should -Be 'operador@contoso.com'
         $cfg.Email.SenderUserId | Should -Be '22222222-2222-2222-2222-222222222222'
         $cfg.Email.Provider | Should -Be 'Graph'
         $cfg.Schedule.Frequency | Should -Be $Expected
-        $cfg.Audit.CopyDirectory | Should -Be 'C:\ProgramData\SharePointVersionCleanup\audit-copy'
+        $cfg.Audit.CopyDirectory | Should -Be (Join-Path $TestDrive 'audit-copy')
         Should -Invoke Connect-CleanupSetup -Times 1
     }
 }
@@ -239,7 +239,7 @@ Describe 'URLs de bibliotecas e pastas' {
             if ($Prompt -match 'Limitar a uma biblioteca|Caminho completo|TODO este site') { throw 'Nao deve perder o escopo ja informado' }
             ''
         }
-        $cfg = New-Configuration -Destination 'C:\ProgramData\SharePointVersionCleanup'
+        $cfg = New-Configuration -Destination $TestDrive
         $cfg.Sites | Should -Be @('https://contoso.sharepoint.com')
         $cfg.FolderScopes['https://contoso.sharepoint.com'] | Should -Be '/teste03'
         Should -Invoke Register-CleanupApplication -Times 1 -ParameterFilter { $Sites.Count -eq 1 -and $Sites[0] -eq 'https://contoso.sharepoint.com' }

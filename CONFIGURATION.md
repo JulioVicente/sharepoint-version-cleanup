@@ -138,7 +138,7 @@ Não há expansão automática de `%ProgramData%` ou `$env:ProgramData` dentro d
 
 O modo aplicado enumera os itens atuais e compara `UniqueId`, `Modified` e `_UIVersionString` com o inventário da última limpeza. Arquivos sem alteração dispensam a consulta de histórico; os novos/alterados são processados. Se metadados estiverem ausentes, o arquivo é processado normalmente. A simulação sempre consulta o histórico. Isso é processamento incremental por arquivo; não usa a API delta nem evita enumerar a biblioteca.
 
-O checkpoint registra arquivos concluídos após sucesso, separado por site, modo e pasta. Em interrupção, a próxima execução retoma os pendentes; arquivos excluídos do SharePoint não impedem a retomada. Na conclusão, remove o checkpoint. A assinatura de retenção invalida o inventário quando `VersionsToKeep` muda; checkpoint interrompido com retenção diferente exige arquivamento manual antes de reiniciar. Um arquivo alterado depois de concluído durante uma execução interrompida será reconsiderado no ciclo completo seguinte.
+O checkpoint registra arquivos concluídos após sucesso, separado por site, modo e pasta. Uma URL registrada não dispensa a reavaliação: a próxima execução compara a assinatura atual com o inventário e verifica a data de reavaliação das versões protegidas por idade. Sem assinatura confiável, consulta novamente o histórico. A simulação sempre faz uma leitura nova. Na conclusão, remove o checkpoint. Mudanças de política invalidam o inventário e arquivam automaticamente o checkpoint anterior. JSON de estado inválido é preservado em `.invalid-*.bak` antes da reconstrução; configuração inválida e checkpoint de outro site/modo são recusados.
 
 O arquivo `.lock` pode permanecer no disco. A exclusividade vem do handle aberto, não de sua existência. Não o apague durante uma execução. Use o mesmo diretório de estado para operações concorrentes no mesmo site. Caminhos diferentes não compartilham esse lock.
 
@@ -202,7 +202,7 @@ As seções abaixo são opcionais; estes padrões se aplicam quando omitidas:
 
 As tentativas cobrem timeouts, erros de rede reconhecidos e HTTP 408, 429, 500, 502, 503 e 504. Erros permanentes são registrados sem repetição imediata. O tratamento respeita a orientação da [Microsoft sobre Retry-After](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
 
-A idade é calculada em UTC. O inventário guarda a próxima data de reavaliação: versões protegidas pela idade voltam a ser consideradas quando envelhecem, mesmo sem alteração do arquivo. Mudanças na quantidade ou idade invalidam o inventário. Arquive checkpoints pendentes com política diferente antes de reiniciar.
+A idade é calculada em UTC. O inventário guarda a próxima data de reavaliação: versões protegidas pela idade voltam a ser consideradas quando envelhecem, mesmo sem alteração do arquivo. Mudanças na quantidade ou idade invalidam o inventário e arquivam automaticamente checkpoints com política diferente.
 
 Na CLI sem JSON, use `-MaxVersionsPerRun` e `-MinimumVersionAgeDays`. Tentativas e cópia externa são configuráveis pelo JSON. A aplicação reavalia o histórico disponível; não exige plano fixo de versões vinculado à simulação.
 

@@ -2,11 +2,13 @@
 
 ## Componentes e requisitos
 
-`bootstrap.ps1` é o ponto de entrada para o comando remoto e funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4+ ou instala a versão estável pelo WinGet, verificando o código de saída. Sem WinGet, apresenta o endereço oficial para instalação manual. Em seguida inicia `Install.ps1` em PowerShell 7. O instalador requer administrador e instala/atualiza PnP.PowerShell 3.0+ e Microsoft.Graph.Authentication 2.0+ para todos os usuários, verificando a importação.
+`bootstrap.ps1` funciona no Windows PowerShell 5.1. Descobre PowerShell 7.4.6+ também fora do PATH ou instala a versão estável pelo WinGet. Se necessário, usa o MSI oficial do GitHub, valida a assinatura Microsoft e executa sem reiniciar o computador. Falhas informam causa e caminho do log MSI. Em seguida inicia `Install.ps1` em processo sem perfil. O instalador requer administrador e usa PSResourceGet, incluído no PowerShell, para preparar módulos compartilhados; não depende de NuGet ou PowerShellGet previamente configurados. PSGallery ausente é registrada; uma origem diferente usando esse nome é recusada.
+
+PnP.PowerShell 3.x e Microsoft.Graph.Authentication 2.x compatíveis já presentes em AllUsers são reutilizados. Quando ausentes, são instaladas as versões 3.0.0 e 2.25.0, respectivamente. A importação usa o manifesto compartilhado. O requisito PowerShell 7.4.6 segue a [publicação oficial do PnP 3](https://pnp.github.io/blog/pnp-powershell/pnp-powershell-v3-0-0/).
 
 O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.1/bootstrap.ps1 | iex`. Ele é equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
-Os scripts de operação exigem PowerShell 7.4+ e PnP.PowerShell. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
+Os scripts de operação exigem PowerShell 7.4.6+ e PnP.PowerShell 3.x. O diagnóstico de pré-requisitos também pode ser executado em Windows PowerShell 5.1. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
 ## Parâmetros do instalador e bootstrap
 
@@ -29,9 +31,11 @@ A operação agendada é uma tarefa do Windows, não um serviço residente. Há 
 
 ## Atualização e falhas
 
-Pause tarefas existentes e aguarde as execuções terminarem antes de atualizar. Execute o bootstrap do novo código. O wizard recolhe a configuração novamente; guarde uma cópia da anterior para consulta. A instalação faz backup dos arquivos gerenciados e das tarefas que substituir. Em falha, tenta restaurar esses arquivos e tarefas, preservando outros arquivos do diretório. Não apaga recursivamente toda a instalação.
+Aguarde execuções terminarem antes de atualizar. O instalador recusa tarefas em execução, suspende as tarefas existentes da instalação e bloqueia outra instalação simultânea no mesmo destino. Preserva os arquivos gerenciados e o XML original das tarefas. Em falha, restaura os arquivos antes das tarefas; se a restauração falhar, mantém backups e informa os caminhos. O log de instalação fica em `%TEMP%/spvc-install-*.log`. Uma interrupção abrupta depois do backup deixa `.install-recovery.json`, que aponta para as evidências e impede sobrescrever a recuperação pendente.
 
-Registro Entra, certificado exportado, módulo instalado e exclusões de versões já aplicadas não são revertidos pelo rollback local. Se houver falha posterior ao piloto, consulte os relatórios antes de repetir. Tarefas antigas além da quantidade configurada não são removidas automaticamente: revise e desabilite as excedentes.
+O wizard carrega sugestões de `config/config.json` e da tentativa mais recente em `config/wizard-defaults.json`. Guarda cada resposta validada, mesmo se a instalação for revertida. Sites, pastas, retenção, email, auditoria, amostragem e horário podem ser aceitos com Enter ou substituídos. Senhas, tokens e aprovações de exclusão não entram nesse histórico. Para remover as sugestões, arquive o histórico; os valores de `config.json` continuam disponíveis enquanto esse arquivo existir. Valores aceitos passam novamente pela validação.
+
+Registro Entra, certificado exportado, módulo instalado e exclusões de versões já aplicadas não são revertidos pelo rollback local. Se houver falha posterior ao piloto, consulte os relatórios antes de repetir. Tarefas antigas excedentes permanecem desabilitadas para não executar escopos removidos.
 
 As permissões Microsoft 365 dependem do administrador: o assistente não pode conceder privilégios que a conta autenticada não possui. A leitura bem-sucedida não comprova permissão para excluir; o piloto aplicado é a validação dessa etapa.
 
@@ -63,6 +67,6 @@ O certificado existente e copiado para LocalMachine usando somente memoria, sem 
 
 A pasta de instalacao deve ser local e dedicada, sem junctions/links. Auditoria, estado e logs devem permanecer em subpastas dela. A tarefa temporaria de teste nao envia email nem exclui versoes e e removida ao terminar, inclusive em erro. Uma falha impede a criacao dos agendamentos definitivos.
 
-Ao atualizar tarefas antigas, a identidade passa a LOCAL SERVICE. Se houver rollback do cadastro, as acoes e gatilhos anteriores sao restaurados com essa identidade sem senha; nao e possivel recuperar a senha da tarefa antiga. Certificado de maquina e ACLs preparados nao sao desfeitos pelo rollback de arquivos. O backup PFX de um certificado novo ainda solicita uma senha de protecao, distinta da senha pessoal do Windows.
+Tarefas antigas que dependem de senha pessoal são recusadas antes da atualização, pois sua identidade não pode ser restaurada automaticamente sem a senha. Migre ou remova essas tarefas antes de instalar. O rollback preserva o XML e a identidade originais das tarefas compatíveis. Certificado de máquina e ACLs preparados não são desfeitos pelo rollback de arquivos. O backup PFX de um certificado novo ainda solicita uma senha de proteção, distinta da senha pessoal do Windows.
 
 Na v1.4.1, as permissoes de chaves CNG sao aplicadas diretamente pelo provedor do Windows (Security Descr), sem presumir uma pasta a partir de UniqueName. A permissao de leitura de LOCAL SERVICE e relida antes do teste real da tarefa. Falhas nessa etapa sao locais e nao exigem recriar o aplicativo ou repetir consentimento no Entra.

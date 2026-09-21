@@ -63,6 +63,38 @@ Describe 'cleanup-versions.ps1' {
         { & $cleanupScript -ConfigPath $badConfig -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw
         Assert-MockCalled Connect-PnPOnline 0 -Scope It
     }
+    It 'reconstroi checkpoint truncado preservando o arquivo original' {
+        $null = New-Item -ItemType Directory -Path $state -Force
+        $site = 'https://contoso.sharepoint.com/sites/test'
+        $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($site))).Substring(0,16)
+        $cp = Join-Path $state "checkpoint-$key-simulation-E3B0C442.json"
+        '{interrupted' | Set-Content $cp
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl $site -PassThru
+        $r.Success | Should -BeTrue
+        $r.FilesProcessed | Should -Be 1
+        @(Get-ChildItem $state -Filter '*.invalid-*.bak').Count | Should -Be 1
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+    It 'reconstroi inventario truncado consultando o SharePoint' {
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'} }
+        $site = 'https://contoso.sharepoint.com/sites/test'
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl $site -Apply -PassThru
+        $inventory = (Get-ChildItem $state -Filter 'inventory-*.json').FullName
+        '{interrupted' | Set-Content $inventory
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl $site -Apply -PassThru
+        $r.FilesProcessed | Should -Be 1
+        $r.FilesUnchanged | Should -Be 0
+        @(Get-ChildItem $state -Filter '*.invalid-*.bak').Count | Should -Be 1
+    }
+    It 'preserva erro da limpeza se a gravacao final do relatorio tambem falhar' {
+        Mock Connect-PnPOnline { throw '403 Forbidden original' }
+        Mock Set-Content { throw 'disk full finalization' } -ParameterFilter { $LiteralPath -like '*report-*.json' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*403 Forbidden original*'
+        # The lock must be released even when finalization cannot write the report.
+        $path = (Get-ChildItem $state -Filter '*.lock').FullName
+        $stream = [IO.File]::Open($path, 'OpenOrCreate', 'ReadWrite', 'None')
+        $stream.Dispose()
+    }
 
     It 'mantem as versoes mais novas e apenas simula a exclusao das antigas' {
         & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -WarningAction SilentlyContinue
@@ -117,7 +149,7 @@ Describe 'cleanup-versions.ps1' {
         Should -Invoke Get-PnPList -Times 0
     }
 
-    It 'retoma depois do arquivo registrado no checkpoint' {
+    It 'reavalia URLs do checkpoint pois arquivos podem mudar entre execucoes' {
         New-Item -ItemType Directory -Force -Path $state | Out-Null
         $siteUrl = 'https://contoso.sharepoint.com/sites/test'
         $siteKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($siteUrl))).Substring(0, 16)
@@ -132,7 +164,7 @@ Describe 'cleanup-versions.ps1' {
         & $cleanupScript -ConfigPath $configPath -SiteUrl $siteUrl -WarningAction SilentlyContinue
 
         Assert-MockCalled Get-PnPFile 1 -Scope It -ParameterFilter { $Url -eq '/docs/b.docx' }
-        Assert-MockCalled Get-PnPFile 0 -Scope It -ParameterFilter { $Url -eq '/docs/a.docx' }
+        Assert-MockCalled Get-PnPFile 1 -Scope It -ParameterFilter { $Url -eq '/docs/a.docx' }
         Test-Path (Join-Path $state "checkpoint-$siteKey-simulation-E3B0C442.json") | Should -Be $false
     }
 
@@ -223,7 +255,7 @@ Describe 'cleanup-versions.ps1' {
         Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         $r.Success | Should -BeTrue
-        $r.FilesProcessed | Should -Be 1
+        $r.FilesProcessed | Should -Be 2
     }
 
     It 'nao reutiliza checkpoint de simulacao na aplicacao' {
@@ -249,6 +281,22 @@ Describe 'cleanup-versions.ps1' {
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         $r.FilesProcessed | Should -Be 1
         Assert-MockCalled Get-PnPFileVersion 2 -Scope It
+    }
+    It 'reprocessa arquivo alterado mesmo que esteja concluido no checkpoint interrompido' {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'interrupted' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*interrupted*'
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-02';UniqueId='a';_UIVersionString='6.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $r.FilesProcessed | Should -Be 2
+        Should -Invoke Get-PnPFileVersion -Times 2 -ParameterFilter { $Url -eq '/docs/a.docx' }
     }
 
     It 'mudanca de retencao invalida inventario incremental' {
@@ -277,8 +325,8 @@ Describe 'cleanup-versions.ps1' {
         $summary.VersionsDeleted | Should -Be 0
     }
 
-    It 'continua apos falha de exclusao, registra causa e retoma somente pendente' {
-        Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx'}, @{FSObjType=0;FileRef='/docs/b.docx'}) }
+    It 'continua apos falha de exclusao e retoma pendente usando assinatura do inventario' {
+        Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'}, @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}) }
         Mock Remove-PnPFileVersion { throw 'acesso negado' } -ParameterFilter { $Url -eq '/docs/a.docx' }
         { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*parcial*'
         Assert-MockCalled Remove-PnPFileVersion 2 -Scope It -ParameterFilter { $Url -eq '/docs/b.docx' }

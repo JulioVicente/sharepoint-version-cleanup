@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 [CmdletBinding(DefaultParameterSetName = 'Config')]
 param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Config')][string]$ConfigPath,
@@ -54,7 +54,8 @@ $inventoryPath = Join-Path $config.Paths.State "inventory-$siteKey-$scopeKey.jso
 $policyKey = "$($config.VersionsToKeep)|$($config.Safety.MinimumVersionAgeDays)"
 $ageCutoff = $startedAt.ToUniversalTime().AddDays(-$config.Safety.MinimumVersionAgeDays)
 $lockPath = Join-Path $config.Paths.State "cleanup-$siteKey.lock"
-New-Item -ItemType Directory -Force -Path $config.Paths.Logs, $config.Paths.State | Out-Null
+try { New-Item -ItemType Directory -Force -Path $config.Paths.Logs, $config.Paths.State | Out-Null }
+catch { throw "[SPVC-STORAGE] Nao foi possivel preparar logs '$($config.Paths.Logs)' e estado '$($config.Paths.State)'. Confira espaco e permissoes. Erro original: $($_.Exception.Message)" }
 
 $lock = $null
 $transcriptStarted = $false
@@ -69,6 +70,7 @@ $report = [ordered]@{
     FilesFailed = 0; LibrariesFailed = 0; Errors = [Collections.Generic.List[string]]::new()
     SamplesInspected = 0; SampleDiscrepancies = 0; SamplesFailed = 0
     LimitReached = $false; AuditBackupError = $null; PolicyKey = $policyKey; MaxVersionsPerRun = $config.Safety.MaxVersionsPerRun
+    Diagnostic = $null
 }
 
 function Write-AuditEvent {
@@ -122,7 +124,7 @@ try {
     }
     Start-Transcript -LiteralPath $logPath -Append | Out-Null
     $transcriptStarted = $true
-    Import-Module PnP.PowerShell -MinimumVersion 3.0.0
+    Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999
 
     Write-Host "Conectando a $SiteUrl"
     $connection = Invoke-PnPRequest { Connect-PnPOnline -Url $SiteUrl -ClientId $config.Authentication.ClientId `
@@ -134,28 +136,36 @@ try {
     $completed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $inventory = @{}
     if ($Apply -and (Test-Path -LiteralPath $inventoryPath)) {
-        $savedInventory = Get-Content -LiteralPath $inventoryPath -Raw | ConvertFrom-Json -AsHashtable
-        if ($savedInventory.PolicyKey -eq $policyKey -and $savedInventory.Files -is [Collections.IDictionary]) {
+        $savedInventory = Read-CleanupState -Path $inventoryPath -Validate {
+            param($s)
+            if (-not $s.PolicyKey -or $s.Files -isnot [Collections.IDictionary]) { return $false }
+            foreach ($entry in $s.Files.Values) {
+                if ($entry -isnot [Collections.IDictionary] -or -not $entry.Signature) { return $false }
+                if ($entry.RecheckAt) { $null = [datetime]$entry.RecheckAt }
+            }
+            return $true
+        }
+        if ($savedInventory -and $savedInventory.PolicyKey -eq $policyKey) {
             $inventory = $savedInventory.Files
         }
     }
     if (Test-Path -LiteralPath $checkpointPath) {
-        $savedCheckpoint = Get-Content -LiteralPath $checkpointPath -Raw | ConvertFrom-Json -AsHashtable
-        if ($savedCheckpoint.SiteUrl -ne $SiteUrl -or $savedCheckpoint.Apply -ne [bool]$Apply -or
-            -not $savedCheckpoint.ContainsKey('VersionsToKeep') -or -not $savedCheckpoint.ContainsKey('CompletedFiles')) {
+        $savedCheckpoint = Read-CleanupState -Path $checkpointPath -Validate { param($s) $s.ContainsKey('SiteUrl') -and $s.ContainsKey('Apply') -and $s.CompletedFiles -is [array] }
+        if ($savedCheckpoint -and ($savedCheckpoint.SiteUrl -ne $SiteUrl -or $savedCheckpoint.Apply -ne [bool]$Apply -or
+            -not $savedCheckpoint.ContainsKey('VersionsToKeep') -or -not $savedCheckpoint.ContainsKey('CompletedFiles'))) {
             throw "Checkpoint incompativel com o site ou modo, ou incompleto: $checkpointPath. Revise esse arquivo antes de reiniciar."
         }
-        if ($savedCheckpoint.VersionsToKeep -ne $config.VersionsToKeep -or
-            ($savedCheckpoint.ContainsKey('PolicyKey') -and $savedCheckpoint.PolicyKey -ne $policyKey)) {
+        if ($savedCheckpoint -and ($savedCheckpoint.VersionsToKeep -ne $config.VersionsToKeep -or
+            ($savedCheckpoint.ContainsKey('PolicyKey') -and $savedCheckpoint.PolicyKey -ne $policyKey))) {
             $archivePath = "$checkpointPath.policy-$runId.bak"
             [IO.File]::Move($checkpointPath, $archivePath)
             Write-Warning "A politica de retencao mudou. Checkpoint anterior preservado em $archivePath. Todos os arquivos serao reavaliados com a politica atual."
             Write-AuditEvent -Event 'CheckpointArchived' -Outcome 'Success' -Reason 'Politica de retencao ou idade alterada.' -Details @{
                 ArchivePath = $archivePath; PreviousVersionsToKeep = $savedCheckpoint.VersionsToKeep; CurrentPolicyKey = $policyKey
             }
-        } else {
-            foreach ($url in $savedCheckpoint.CompletedFiles) { $completed.Add([string]$url) | Out-Null }
         }
+        # A URL-only checkpoint cannot prove the file is still unchanged or that
+        # deferred versions are still too young. Re-evaluate using the inventory.
     }
     $scannedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $libraries = Invoke-PnPRequest { Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $scopeFolder -Connection $connection }
@@ -289,8 +299,8 @@ try {
             $samplePath = Join-Path $config.Paths.State "sampling-$siteKey-$scopeKey-$libraryKey.json"
             $sampleState = @{ CycleId = [guid]::NewGuid().ToString('N'); CompletedIds = @() }
             if (Test-Path -LiteralPath $samplePath) {
-                $sampleState = Get-Content -LiteralPath $samplePath -Raw | ConvertFrom-Json -AsHashtable
-                if (-not $sampleState.CycleId -or -not $sampleState.ContainsKey('CompletedIds')) { throw 'Estado da amostragem invalido.' }
+                $savedSample = Read-CleanupState -Path $samplePath -Validate { param($s) $s.CycleId -and $s.CompletedIds -is [array] }
+                if ($savedSample) { $sampleState = $savedSample }
             }
             $samples = @(Select-WeightedSample -Items $sampleCandidates.ToArray() -Settings $config.Sampling -State $sampleState -Now $startedAt)
             foreach ($sample in $samples) {
@@ -349,7 +359,8 @@ try {
     Remove-Item -LiteralPath $checkpointPath -Force -ErrorAction SilentlyContinue
 } catch {
     $report.Error = $_.Exception.Message
-    throw
+    $report.Diagnostic = Get-CleanupFailureHint -Failure $_
+    throw [InvalidOperationException]::new("$($report.Diagnostic) Erro original: $($report.Error) Relatorio: $($report.ReportPath); log: $logPath", $_.Exception)
 } finally {
     $report.FinishedAt = Get-Date
     if ($transcriptStarted) { try { Stop-Transcript | Out-Null } catch { Write-Warning $_.Exception.Message } }
@@ -380,6 +391,11 @@ try {
             Write-Warning "Falha no email; consulte o relatorio local: $($_.Exception.Message)"
         }
     }
+    } catch {
+        # A second disk/audit failure must not replace the actual cleanup error.
+        $finalizationError = "[SPVC-REPORT] Falha ao finalizar auditoria/relatorio '$reportPath': $($_.Exception.Message)"
+        if ($report.Error) { Write-Warning $finalizationError }
+        else { throw $finalizationError }
     } finally { if ($lock) { $lock.Dispose() } }
 }
 

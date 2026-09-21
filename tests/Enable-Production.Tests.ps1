@@ -19,7 +19,7 @@ Describe 'Production scope' {
         $cfg.Paths.Logs = Join-Path $installation 'logs'
         $cfg.Paths.State = Join-Path $installation 'state'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
-        @{SiteUrl='https://contoso.sharepoint.com';Success=$true;Apply=$true;VersionsToKeep=10;FilesProcessed=1;FilesSkipped=0;VersionsDeleted=2;FolderServerRelativeUrl='/teste03';FinishedAt=(Get-Date).AddMinutes(-1)} |
+        @{SiteUrl='https://contoso.sharepoint.com';Success=$true;Apply=$true;VersionsToKeep=10;PolicyKey='10|30';FilesProcessed=1;FilesSkipped=0;VersionsDeleted=2;FolderServerRelativeUrl='/teste03';FinishedAt=(Get-Date).AddMinutes(-1)} |
             ConvertTo-Json | Set-Content (Join-Path $cfg.Paths.Logs 'report-pilot.json')
         Mock Get-ScheduledTask { [pscustomobject]@{TaskName='SharePoint Version Cleanup - 01'; Actions=@([pscustomobject]@{Execute='C:\Program Files\PowerShell\7\pwsh.exe';Arguments='wrong-scope'})} }
         Mock New-ScheduledTaskAction { [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
@@ -27,6 +27,12 @@ Describe 'Production scope' {
     }
     It 'nao promove tarefa de outro escopo' {
         { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*escopo*'
+        Should -Invoke Set-ScheduledTask -Times 0
+    }
+    It 'recusa piloto cuja idade minima difere da politica atual' {
+        $cfg.Safety.MinimumVersionAgeDays = 0
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*Nenhum piloto*'
         Should -Invoke Set-ScheduledTask -Times 0
     }
     It 'promove somente a tarefa explicitamente indicada e validada' {

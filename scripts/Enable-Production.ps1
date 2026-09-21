@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [Parameter(Mandatory)][string]$ConfigPath,
@@ -14,13 +14,17 @@ $ErrorActionPreference = 'Stop'
 $config = Read-CleanupConfiguration $ConfigPath
 $PilotSiteUrl = ConvertTo-SiteUrl $PilotSiteUrl
 if ($PilotSiteUrl -notin $config.Sites) { throw 'Site piloto nao cadastrado.' }
+if (-not $PilotFolderServerRelativeUrl -and $config.FolderScopes[$PilotSiteUrl]) { $PilotFolderServerRelativeUrl = $config.FolderScopes[$PilotSiteUrl] }
+if ($PilotFolderServerRelativeUrl) { $PilotFolderServerRelativeUrl = ConvertTo-CleanupFolder $PilotFolderServerRelativeUrl $PilotSiteUrl }
+if ($config.FolderScopes[$PilotSiteUrl] -and $PilotFolderServerRelativeUrl -ne $config.FolderScopes[$PilotSiteUrl]) { throw 'A pasta piloto difere do escopo autorizado na configuracao.' }
+$policyKey = "$($config.VersionsToKeep)|$($config.Safety.MinimumVersionAgeDays)"
 $now = (Get-Date).ToUniversalTime()
 $pilot = Get-ChildItem -LiteralPath $config.Paths.Logs -Filter 'report-*.json' -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
         try {
             $r = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -AsHashtable
             if ($r.SiteUrl -eq $PilotSiteUrl -and $r.Success -eq $true -and $r.Apply -eq $true -and
-                $r.VersionsToKeep -eq $config.VersionsToKeep -and $r.FilesProcessed -gt 0 -and
+                $r.VersionsToKeep -eq $config.VersionsToKeep -and $r.PolicyKey -eq $policyKey -and $r.FilesProcessed -gt 0 -and
                 $r.VersionsDeleted -gt 0 -and $r.FilesSkipped -eq 0 -and
                 $r.FolderServerRelativeUrl -eq $PilotFolderServerRelativeUrl.TrimEnd('/') -and
                 ([datetime]$r.FinishedAt).ToUniversalTime() -ge $now.AddDays(-$MaximumPilotAgeDays) -and

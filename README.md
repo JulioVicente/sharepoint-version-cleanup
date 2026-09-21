@@ -10,7 +10,7 @@ Abra **PowerShell como Administrador** e execute:
 iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.1/bootstrap.ps1 | iex
 ```
 
-Esse é o comando curto, no estilo de instaladores como o OpenClaw: ele busca o lançador no GitHub e inicia o wizard. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica o PowerShell 7.4+ e instala via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell 3.0+, pergunta os dados, valida o acesso, simula e apresenta o resultado. Sem WinGet, orienta a instalação oficial do PowerShell.
+Esse comando busca o lançador no GitHub e inicia o wizard. Para inspecionar antes, siga o [guia rápido](QUICK_START.md). O bootstrap verifica PowerShell 7.4.6+ e instala via WinGet quando necessário, com alternativa pelo MSI oficial de assinatura Microsoft validada. O wizard prepara PnP.PowerShell 3.x para todos os usuários, pergunta os dados, valida o acesso e simula. Os últimos valores preenchidos aparecem como sugestões: Enter aceita, e outro valor substitui a sugestão.
 
 O lançador em `main` instala componentes fixados na tag `v1.4.1` e verifica SHA256. Para testar um checkout local, regenere o manifesto com `& .\tools\Update-ReleaseManifest.ps1` e execute `& .\bootstrap.ps1`.
 

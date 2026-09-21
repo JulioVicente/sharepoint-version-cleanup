@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 <#
 .SYNOPSIS
 Instala e configura o SharePoint Version Cleanup.
@@ -23,10 +23,13 @@ $ProgressPreference = 'SilentlyContinue'
 $script:TaskPrefix = 'SharePoint Version Cleanup'
 $script:TaskBackups = @{}
 $script:NewTasks = [Collections.Generic.List[string]]::new()
+$script:WizardDefaults = @{}
+$script:WizardDefaultsPath = $null
 $script:RequiredFiles = @(
     'scripts/cleanup-versions.ps1',
     'scripts/Send-EmailReport.ps1',
     'scripts/Configuration.ps1',
+    'scripts/Diagnostics.ps1',
     'scripts/Progress.ps1',
     'scripts/TaskIdentity.ps1',
     'scripts/Test-ServiceContext.ps1',
@@ -70,14 +73,15 @@ function Test-Administrator {
 
 function Assert-Environment {
     if ($env:OS -ne 'Windows_NT') { throw 'Este instalador e exclusivo para Windows.' }
+    if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { throw '[SPVC-POLICY] A politica da maquina restringe o PowerShell. Solicite liberacao administrativa para executar este instalador em FullLanguage.' }
     if (-not (Test-Administrator)) {
         throw 'Execute o PowerShell como Administrador e rode novamente o comando de instalacao.'
     }
 
-    # PnP.PowerShell 3.x exige PowerShell 7.4 ou mais recente.
-    if ($PSVersionTable.PSVersion -lt [version]'7.4.0') {
+    # PnP.PowerShell 3.x exige PowerShell 7.4.6 ou mais recente.
+    if ($PSVersionTable.PSVersion -lt [version]'7.4.6') {
         throw @"
-PowerShell 7.4 ou superior e necessario. Instale-o com:
+PowerShell 7.4.6 ou superior e necessario. Instale-o com:
   winget install --id Microsoft.PowerShell --source winget
 Depois abra o PowerShell 7 como Administrador e execute novamente o instalador.
 "@
@@ -88,19 +92,46 @@ function Ensure-PnPModule {
     [CmdletBinding(SupportsShouldProcess)]
     param()
     Write-Step '1 de 5 - Validando e instalando dependencias'
-    $sharedModuleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
-    $module = Get-Module -ListAvailable PnP.PowerShell | Where-Object {
-        $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase)
-    } |
-        Sort-Object Version -Descending |
-        Select-Object -First 1
-
-    if (-not $module -or $module.Version -lt [version]'3.0.0') {
-        if ($PSCmdlet.ShouldProcess('PnP.PowerShell', 'Instalar modulo para todos os usuarios')) {
-            Install-Module PnP.PowerShell -MinimumVersion 3.0.0 -Scope AllUsers -Repository PSGallery -Force -AllowClobber
-        }
+    if ($PSCmdlet.ShouldProcess('PnP.PowerShell', 'Preparar modulo para todos os usuarios')) {
+        Ensure-CleanupModule -Name PnP.PowerShell -MinimumVersion 3.0.0 -InstallVersion 3.0.0
     }
-    Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -Force
+}
+
+function Ensure-CleanupModule {
+    param([string]$Name, [version]$MinimumVersion, [string]$InstallVersion)
+    $sharedModuleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
+    # A customized PSModulePath must not hide the modules from the installer.
+    if ($sharedModuleRoot -notin ($env:PSModulePath -split [IO.Path]::PathSeparator)) {
+        $env:PSModulePath = "$sharedModuleRoot$([IO.Path]::PathSeparator)$env:PSModulePath"
+    }
+    $builtInModuleRoot = Join-Path $PSHOME 'Modules'
+    if ($builtInModuleRoot -notin ($env:PSModulePath -split [IO.Path]::PathSeparator)) {
+        $env:PSModulePath = "$builtInModuleRoot$([IO.Path]::PathSeparator)$env:PSModulePath"
+    }
+    $module = Get-Module -ListAvailable $Name | Where-Object {
+        $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and
+        $_.Version -ge $MinimumVersion -and $_.Version.Major -eq $MinimumVersion.Major -and (!$_.PowerShellVersion -or $_.PowerShellVersion -le $PSVersionTable.PSVersion)
+    } | Sort-Object Version -Descending | Select-Object -First 1
+    try {
+        if (-not $module) {
+            # PSResourceGet ships with PowerShell 7.4; it needs neither NuGet bootstrap nor PowerShellGet.
+            Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
+            $repository = Get-PSResourceRepository -Name PSGallery -ErrorAction SilentlyContinue
+            if (-not $repository) { Register-PSResourceRepository -PSGallery -ErrorAction Stop }
+            elseif ($repository.Uri.AbsoluteUri.TrimEnd('/') -ne 'https://www.powershellgallery.com/api/v2') {
+                throw 'PSGallery aponta para um endereco diferente do oficial. Revise Get-PSResourceRepository.'
+            }
+            Install-PSResource -Name $Name -Version $InstallVersion -Scope AllUsers -Repository PSGallery -TrustRepository -Quiet -ErrorAction Stop
+            $module = Get-Module -ListAvailable $Name | Where-Object {
+                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$InstallVersion
+            } | Select-Object -First 1
+            if (-not $module) { throw "Instalacao nao disponibilizou $Name $InstallVersion em $sharedModuleRoot." }
+        }
+        # Import the shared manifest, never a same-name CurrentUser module.
+        Import-Module -Name $module.Path -Force -ErrorAction Stop
+    } catch {
+        throw [InvalidOperationException]::new("[SPVC-DEPENDENCY] Falha ao preparar $Name para todos os usuarios. PowerShell: $($PSVersionTable.PSVersion); destino: $sharedModuleRoot. Verifique acesso HTTPS a powershellgallery.com, proxy/TLS, espaco em disco e permissao administrativa. Se houver conflito de assemblies, execute bootstrap.ps1 em um novo processo. Erro original: $($_.Exception.Message)", $_.Exception)
+    }
 }
 
 function Copy-ProjectFiles {
@@ -174,7 +205,7 @@ function Get-CleanupTenantContext {
         Write-Host "Tenant identificado pelo SharePoint: $tenant"
     } catch {
         Write-Warning 'Nao foi possivel identificar o tenant pela URL. Informe o dominio ou ID para continuar.'
-        $tenant = Read-Validated -Prompt 'Dominio ou ID do tenant' -Validate {
+        $tenant = Read-Validated -PreferenceKey Tenant -Prompt 'Dominio ou ID do tenant' -Validate {
             param($v)
             $id = [guid]::Empty
             if ([guid]::TryParse($v, [ref]$id) -and $id -ne [guid]::Empty) { return $id.ToString() }
@@ -185,7 +216,7 @@ function Get-CleanupTenantContext {
     $adminUrl = if ($siteUri.Host -match '^([a-zA-Z0-9-]+?)(?:-admin)?\.sharepoint\.com$') {
         "https://$($Matches[1])-admin.sharepoint.com"
     } else {
-        Read-Validated -Prompt 'URL administrativa do SharePoint' -Validate { param($v) ConvertTo-SiteUrl $v }
+        Read-Validated -PreferenceKey AdminUrl -Prompt 'URL administrativa do SharePoint' -Validate { param($v) ConvertTo-SiteUrl $v }
     }
     Write-Host "URL administrativa: $adminUrl"
     return @{ Tenant = $tenant; AdminUrl = $adminUrl }
@@ -213,10 +244,7 @@ function Get-SetupGraphCollection {
 
 function Connect-CleanupSetup {
     param([string]$Tenant)
-    if (-not (Get-Module -ListAvailable Microsoft.Graph.Authentication | Where-Object Version -GE ([version]'2.0.0'))) {
-        Install-Module Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -Scope AllUsers -Repository PSGallery -Force -AllowClobber
-    }
-    Import-Module Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -ErrorAction Stop
+    Ensure-CleanupModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -InstallVersion 2.25.0
     $login = @{ TenantId = $Tenant; Scopes = @('Application.ReadWrite.All','Sites.FullControl.All','User.Read'); ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
     if ($AdminClientId) { $login.ClientId = $AdminClientId }
     Connect-MgGraph @login | Out-Null
@@ -504,37 +532,107 @@ function Register-CleanupApplication {
     Grant-CleanupSites -ClientId $app.appId -Sites $Sites
     return @{ ClientId = $app.appId; CertificateThumbprint = $certificate.Thumbprint }
 }
+function Initialize-CleanupWizardDefaults {
+    param([string]$Destination)
+    $script:WizardDefaults = @{}
+    $script:WizardDefaultsPath = Join-Path $Destination 'config/wizard-defaults.json'
+    $configPath = Join-Path $Destination 'config/config.json'
+    # Only a fixed allowlist of non-secret input fields is retained.
+    foreach ($source in @($configPath, $script:WizardDefaultsPath)) {
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { continue }
+        try {
+            $saved = Get-Content -LiteralPath $source -Raw | ConvertFrom-Json -AsHashtable
+            if ($saved -isnot [Collections.IDictionary]) { throw 'Objeto JSON esperado.' }
+            if ($source -eq $configPath) {
+                foreach ($key in 'Sites','Tenant','AdminUrl','VersionsToKeep') {
+                    if ($saved.ContainsKey($key)) { $script:WizardDefaults[$key] = $saved[$key] }
+                }
+                foreach ($section in 'Email','Safety','Sampling','Schedule','Audit') {
+                    if ($saved[$section] -isnot [Collections.IDictionary]) { continue }
+                    foreach ($key in $saved[$section].Keys) {
+                        $name = "$section.$key"
+                        if (Test-CleanupWizardKey $name) { $script:WizardDefaults[$name] = $saved[$section][$key] }
+                    }
+                }
+                if ($saved['FolderScopes'] -is [Collections.IDictionary]) {
+                    foreach ($site in $saved['FolderScopes'].Keys) { $script:WizardDefaults["Folder:$site"] = $saved['FolderScopes'][$site] }
+                }
+            } elseif ($saved['Values'] -is [Collections.IDictionary]) {
+                if ((Test-Path -LiteralPath $configPath) -and (Get-Item -LiteralPath $configPath).LastWriteTimeUtc -gt (Get-Item -LiteralPath $source).LastWriteTimeUtc) { continue }
+                foreach ($key in $saved.Values.Keys) {
+                    if (Test-CleanupWizardKey $key) { $script:WizardDefaults[$key] = $saved.Values[$key] }
+                }
+            }
+        } catch { Write-Warning "Sugestoes de '$source' indisponiveis; preencha os campos normalmente. $($_.Exception.Message)" }
+    }
+    if ($script:WizardDefaults.Count) { Write-Host 'Ultimos valores carregados como sugestoes. Enter aceita; digite outro valor para alterar. As aprovacoes do piloto e da producao serao solicitadas novamente.' }
+}
+
+function Test-CleanupWizardKey {
+    param([string]$Key)
+    return $Key -in @('Sites','Tenant','AdminUrl','VersionsToKeep','Email.Enabled','Email.To',
+        'Safety.MinimumVersionAgeDays','Safety.MaxVersionsPerRun','Audit.CopyDirectory',
+        'Sampling.Enabled','Sampling.SamplesPerLibrary','Sampling.SizeWeight','Sampling.RecencyWeight',
+        'Sampling.RecencyHalfLifeDays','Schedule.Frequency','Schedule.Time') -or $Key -match '^Folder:https://'
+}
+
+function Save-CleanupWizardPreference {
+    param([string]$Key, $Value)
+    if (-not $script:WizardDefaultsPath -or -not (Test-CleanupWizardKey $Key)) { return }
+    $script:WizardDefaults[$Key] = $Value
+    try {
+        $null = New-Item -ItemType Directory -Path (Split-Path $script:WizardDefaultsPath -Parent) -Force
+        @{ SchemaVersion = 1; Values = $script:WizardDefaults } | ConvertTo-Json -Depth 6 |
+            Set-Content -LiteralPath "$script:WizardDefaultsPath.tmp" -Encoding utf8
+        [IO.File]::Move("$script:WizardDefaultsPath.tmp", $script:WizardDefaultsPath, $true)
+    } catch { Write-Warning "Nao foi possivel guardar as sugestoes em '$script:WizardDefaultsPath': $($_.Exception.Message)" }
+}
+
 function Read-Validated {
-    param([string]$Prompt, [string]$Default, [scriptblock]$Validate, [switch]$AllowEmpty)
+    param([string]$Prompt, [string]$Default, [scriptblock]$Validate, [switch]$AllowEmpty, [string]$PreferenceKey)
+    if ($PreferenceKey -and $script:WizardDefaults.ContainsKey($PreferenceKey)) {
+        $Default = @($script:WizardDefaults[$PreferenceKey]) -join ', '
+        if ($PreferenceKey -eq 'Audit.CopyDirectory' -and -not $Default) { $Default = '-' }
+    }
     while ($true) {
         $answer = Read-Default -Prompt $Prompt -Default $Default -Required:(-not $AllowEmpty)
-        try { return (& $Validate $answer) }
+        try {
+            $result = & $Validate $answer
+            if ($PreferenceKey) { Save-CleanupWizardPreference -Key $PreferenceKey -Value $result }
+            return $result
+        }
         catch { Write-Host "Vamos corrigir: $($_.Exception.Message)" -ForegroundColor Yellow }
     }
 }
 
 function Read-YesNo {
-    param([string]$Prompt, [bool]$Default = $false)
+    param([string]$Prompt, [bool]$Default = $false, [string]$PreferenceKey)
+    if ($PreferenceKey -and $script:WizardDefaults[$PreferenceKey] -is [bool]) { $Default = $script:WizardDefaults[$PreferenceKey] }
     $fallback = if ($Default) { 'S' } else { 'N' }
-    return (Read-Validated -Prompt "$Prompt (S/N)" -Default $fallback -Validate {
+    $result = Read-Validated -Prompt "$Prompt (S/N)" -Default $fallback -Validate {
         param($answer)
         if ($answer -notmatch '^(s|sim|n|nao|não)$') { throw 'Digite S para sim ou N para nao.' }
         return $answer -match '^(s|sim)$'
-    })
+    }
+    if ($PreferenceKey) { Save-CleanupWizardPreference -Key $PreferenceKey -Value $result }
+    return $result
 }
 
 function New-Configuration {
     param([string]$Destination)
+    Initialize-CleanupWizardDefaults -Destination $Destination
     Write-Step '2 de 5 - Vamos configurar o acesso e o escopo'
     Write-Host 'O acesso usa um aplicativo e um certificado da conta que executara as tarefas.'
-    $sites = @(Read-Validated -Prompt 'URLs dos sites, separadas por virgula (para teste03 use a URL raiz do site)' -Validate {
+    $sites = @(Read-Validated -PreferenceKey Sites -Prompt 'URLs dos sites, separadas por virgula (para teste03 use a URL raiz do site)' -Validate {
         param($v)
         @($v.Split(',') | ForEach-Object { ConvertTo-SiteUrl $_.Trim() } | Select-Object -Unique)
     })
     $context = Get-CleanupTenantContext -SiteUrl $sites[0]
     $tenant = $context.Tenant
     $adminUrl = $context.AdminUrl
-    $email = @{ Enabled = (Read-YesNo 'Enviar relatorios pelo Microsoft 365 (Graph)?' -Default $true); Provider = 'Graph'; From = ''; SenderUserId = ''; To = @() }
+    Save-CleanupWizardPreference -Key Tenant -Value $tenant
+    Save-CleanupWizardPreference -Key AdminUrl -Value $adminUrl
+    $email = @{ Enabled = (Read-YesNo 'Enviar relatorios pelo Microsoft 365 (Graph)?' -PreferenceKey Email.Enabled -Default $true); Provider = 'Graph'; From = ''; SenderUserId = ''; To = @() }
     Write-Step 'Autenticando no Microsoft 365 antes de configurar a limpeza'
     Connect-CleanupSetup -Tenant $tenant
     # Resolve library/folder URLs before creating certificates or changing applications.
@@ -573,11 +671,13 @@ function New-Configuration {
                 }
             }
             Write-Host "Biblioteca/pasta identificada na URL: $($scopes[$site]). A limpeza ficara limitada a esse caminho."
+            Save-CleanupWizardPreference -Key "Folder:$site" -Value $scopes[$site]
             continue
         }
         Write-Host 'Informe o caminho da biblioteca/pasta, ex.: /teste03. Inclua o caminho do site quando houver.'
-        if (Read-YesNo 'Limitar a uma biblioteca ou pasta?' -Default $true) {
-            $scopes[$site] = Read-Validated -Prompt 'Caminho completo dentro do servidor' -Validate {
+        $limitDefault = -not $script:WizardDefaults.ContainsKey("Folder:$site") -or [bool]$script:WizardDefaults["Folder:$site"]
+        if (Read-YesNo 'Limitar a uma biblioteca ou pasta?' -Default $limitDefault) {
+            $scopes[$site] = Read-Validated -PreferenceKey "Folder:$site" -Prompt 'Caminho completo dentro do servidor' -Validate {
                 param($v)
                 Test-CleanupFolderAccess -SiteUrl $site -Folder $v
             }
@@ -585,6 +685,7 @@ function New-Configuration {
             if (-not (Read-YesNo 'Confirma que o escopo sera TODO este site?')) { throw 'Escopo nao confirmado. Reinicie o assistente.' }
             $scopes[$site] = ''
         }
+        Save-CleanupWizardPreference -Key "Folder:$site" -Value $scopes[$site]
     }
     if ($email.Enabled) {
         $profile = Invoke-SetupGraph -Path 'me?$select=id,mail,userPrincipalName'
@@ -592,7 +693,7 @@ function New-Configuration {
         $email.From = if ($profile.mail) { [string]$profile.mail } else { [string]$profile.userPrincipalName }
         if (-not $email.SenderUserId -or -not $email.From) { throw 'Nao foi possivel identificar a conta autenticada para o envio Graph.' }
         Write-Host "Remetente Microsoft 365 identificado pelo login: $($email.From)"
-        $email.To = @(Read-Validated -Prompt 'Destinatarios separados por virgula' -Default $email.From -Validate {
+        $email.To = @(Read-Validated -PreferenceKey Email.To -Prompt 'Destinatarios separados por virgula' -Default $email.From -Validate {
             param($v)
             @($v.Split(',') | ForEach-Object { ([Net.Mail.MailAddress]::new($_.Trim())).Address })
         })
@@ -630,25 +731,25 @@ function New-Configuration {
             }
         }
     }
-    $keep = Read-Validated -Prompt 'Versoes HISTORICAS a manter (a atual sempre e preservada)' -Default '10' -Validate {
+    $keep = Read-Validated -PreferenceKey VersionsToKeep -Prompt 'Versoes HISTORICAS a manter (a atual sempre e preservada)' -Default '10' -Validate {
         param($v)
         $n = 0
         if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1) { throw 'Use um inteiro maior que zero.' }
         $n
     }
-    $minimumAge = Read-Validated -Prompt 'Idade minima das versoes, em dias (0 somente para piloto descartavel)' -Default '30' -Validate {
+    $minimumAge = Read-Validated -PreferenceKey Safety.MinimumVersionAgeDays -Prompt 'Idade minima das versoes, em dias (0 somente para piloto descartavel)' -Default '30' -Validate {
         param($v)
         $n=0
         if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 0 -or $n -gt 36500) { throw 'Use um inteiro de 0 a 36500.' }
         $n
     }
-    $maximumDeletes = Read-Validated -Prompt 'Limite de exclusoes por execucao' -Default '1000' -Validate {
+    $maximumDeletes = Read-Validated -PreferenceKey Safety.MaxVersionsPerRun -Prompt 'Limite de exclusoes por execucao' -Default '1000' -Validate {
         param($v)
         $n=0
         if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000000) { throw 'Use um inteiro de 1 a 1000000.' }
         $n
     }
-    $auditCopy = Read-Validated -Prompt 'Pasta para copiar auditoria (Enter aceita; - desabilita)' -Default (Join-Path $Destination 'audit-copy') -Validate {
+    $auditCopy = Read-Validated -PreferenceKey Audit.CopyDirectory -Prompt 'Pasta para copiar auditoria (Enter aceita; - desabilita)' -Default (Join-Path $Destination 'audit-copy') -Validate {
         param($v)
         if ($v -ne '-') {
             $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
@@ -664,16 +765,22 @@ function New-Configuration {
         Test-CleanupAuditDirectory -Path $v
     }
     $sampling = @{Enabled=$true;SamplesPerLibrary=1;SizeWeight=1;RecencyWeight=4;RecencyHalfLifeDays=30}
-    $sampling.Enabled = Read-YesNo 'Conferir uma amostra dos arquivos inalterados, priorizando maiores e recentes?' -Default $true
+    foreach ($key in 'SizeWeight','RecencyWeight','RecencyHalfLifeDays') {
+        $savedWeight = $script:WizardDefaults["Sampling.$key"]
+        $minimum = if ($key -eq 'RecencyHalfLifeDays') { 1 } else { 0 }
+        $maximum = if ($key -eq 'RecencyHalfLifeDays') { 36500 } else { 100 }
+        if (($savedWeight -is [int] -or $savedWeight -is [long]) -and $savedWeight -ge $minimum -and $savedWeight -le $maximum) { $sampling[$key] = $savedWeight }
+    }
+    $sampling.Enabled = Read-YesNo 'Conferir uma amostra dos arquivos inalterados, priorizando maiores e recentes?' -PreferenceKey Sampling.Enabled -Default $true
     if ($sampling.Enabled) {
-        $sampling.SamplesPerLibrary = Read-Validated -Prompt 'Arquivos a conferir por biblioteca em cada execucao incremental' -Default '1' -Validate {
+        $sampling.SamplesPerLibrary = Read-Validated -PreferenceKey Sampling.SamplesPerLibrary -Prompt 'Arquivos a conferir por biblioteca em cada execucao incremental' -Default '1' -Validate {
             param($v)
             $n=0
             if (-not [int]::TryParse($v,[ref]$n) -or $n -lt 1 -or $n -gt 1000) { throw 'Use um inteiro de 1 a 1000.' }
             $n
         }
     }
-    $frequency = Read-Validated -Prompt 'Periodicidade: D = diaria, S = semanal' -Default 'S' -Validate {
+    $frequency = Read-Validated -PreferenceKey Schedule.Frequency -Prompt 'Periodicidade: D = diaria, S = semanal' -Default 'S' -Validate {
         param($v)
         switch ($v.Trim().ToUpperInvariant()) {
             { $_ -in 'D','DIARIA' } { 'diaria'; break }
@@ -681,7 +788,7 @@ function New-Configuration {
             default { throw 'Digite D para diaria ou S para semanal.' }
         }
     }
-    $time = Read-Validated -Prompt 'Horario local da tarefa (HH:mm)' -Default '22:00' -Validate {
+    $time = Read-Validated -PreferenceKey Schedule.Time -Prompt 'Horario local da tarefa (HH:mm)' -Default '22:00' -Validate {
         param($v)
         if ($v -notmatch '^([01]\d|2[0-3]):[0-5]\d$') { throw 'Use HH:mm, por exemplo 22:00.' }
         $v
@@ -760,7 +867,7 @@ function Install-ScheduledTasks {
 
     Write-Step '5 de 5 - Criando tarefas agendadas'
     $days = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
-    $pwsh = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
     $cleanupScript = Join-Path $Destination 'scripts\cleanup-versions.ps1'
     $configPath = Join-Path $Destination 'config\config.json'
     Write-Host 'As tarefas usarao LOCAL SERVICE e o certificado do aplicativo, sem senha pessoal e sem exigir sessao aberta.'
@@ -790,7 +897,7 @@ function Install-ScheduledTasks {
                         $existingTask.Actions[0].Arguments -notlike "*`"$configPath`"*") {
                         throw "A tarefa $taskName pertence a outra configuracao. Escolha nomes/destino sem conflito."
                     }
-                    $script:TaskBackups[$taskName] = Export-ScheduledTask -TaskName $taskName
+                    if (-not $script:TaskBackups.ContainsKey($taskName)) { $script:TaskBackups[$taskName] = Export-ScheduledTask -TaskName $taskName -TaskPath '\' }
                 } else {
                     $script:NewTasks.Add($taskName)
                 }
@@ -801,6 +908,72 @@ function Install-ScheduledTasks {
         }
 }
 
+function Suspend-CleanupInstallationTasks {
+    param([string]$Destination)
+    $configPath = Join-Path $Destination 'config\config.json'
+    $owned = @(Get-ScheduledTask -TaskPath '\' -ErrorAction Stop | Where-Object {
+        $_.TaskName -like "$script:TaskPrefix - *" -and @($_.Actions | Where-Object {
+            $_.Arguments -and $_.Arguments.Contains("`"$configPath`"", [StringComparison]::OrdinalIgnoreCase)
+        }).Count
+    })
+    # Validate all tasks before disabling even the first one.
+    foreach ($task in $owned) {
+        if ($task.State -eq 'Running') { throw "[SPVC-INSTALL-BUSY] Tarefa '$($task.TaskName)' em execucao. Aguarde sua conclusao antes de atualizar." }
+        if ($task.Principal.LogonType -eq 'Password') { throw "[SPVC-LEGACY-TASK] Tarefa '$($task.TaskName)' usa senha pessoal. Migre ou remova essa tarefa antes de atualizar; sua identidade nao pode ser restaurada automaticamente sem a senha." }
+    }
+    foreach ($task in $owned) {
+        $script:TaskBackups[$task.TaskName] = Export-ScheduledTask -TaskName $task.TaskName -TaskPath '\'
+        $null = Disable-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop
+        if ((Get-ScheduledTask -TaskName $task.TaskName -TaskPath '\').State -eq 'Running') {
+            throw "[SPVC-INSTALL-BUSY] A tarefa '$($task.TaskName)' iniciou durante a preparacao. Nenhum componente deve ser atualizado enquanto ela executa."
+        }
+    }
+}
+
+function Restore-CleanupInstallation {
+    param([hashtable]$Backups, [string[]]$Written, [string]$RollbackRoot)
+    $failures = [Collections.Generic.List[string]]::new()
+    foreach ($taskName in $script:NewTasks) {
+        try { Unregister-ScheduledTask -TaskName $taskName -TaskPath '\' -Confirm:$false -ErrorAction Stop }
+        catch { $failures.Add("Tarefa ${taskName}: $($_.Exception.Message)") }
+    }
+    # Restore files before re-enabling old tasks.
+    foreach ($target in $Written) {
+        try {
+            if ($Backups.ContainsKey($target)) { Copy-Item -LiteralPath $Backups[$target] -Destination $target -Force -ErrorAction Stop }
+            elseif (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force -ErrorAction Stop }
+        } catch { $failures.Add("Arquivo ${target}: $($_.Exception.Message)") }
+    }
+    foreach ($entry in $script:TaskBackups.GetEnumerator()) {
+        try {
+            if ($failures.Count) { throw 'Restauracao de arquivos incompleta; tarefa mantida desabilitada.' }
+            Register-ScheduledTask -TaskName $entry.Key -TaskPath '\' -Xml $entry.Value -Force -ErrorAction Stop | Out-Null
+        } catch { $failures.Add("Tarefa $($entry.Key): $($_.Exception.Message)") }
+    }
+    if ($failures.Count) {
+        Write-Warning "[SPVC-ROLLBACK] Restauracao incompleta. Backups preservados em '$RollbackRoot'. $($failures -join '; ')"
+        return $false
+    }
+    return $true
+}
+
+function Assert-CleanupInstallPath {
+    param([string]$Path)
+    if ($Path.StartsWith('\\') -or -not [IO.Path]::IsPathFullyQualified($Path)) { throw '[SPVC-PATH] Use uma pasta local absoluta e dedicada para a instalacao.' }
+    $cursor = $Path
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force
+            if (-not $item.PSIsContainer -or $item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "[SPVC-PATH] Caminho nao e uma pasta local sem redirecionamento: $cursor" }
+        }
+        $cursor = Split-Path $cursor -Parent
+    }
+    if (Test-Path -LiteralPath $Path) {
+        $links = @(Get-ChildItem -LiteralPath $Path -Recurse -Force -ErrorAction Stop | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint })
+        if ($links.Count) { throw "[SPVC-PATH] A instalacao contem redirecionamentos: $($links[0].FullName). Use uma pasta local dedicada." }
+    }
+}
+
 # A dry run must not import/install modules, prompt, write files or register apps.
 if (-not $PSCmdlet.ShouldProcess($InstallPath, 'Instalar arquivos, configurar aplicativo e agendar simulacoes')) { return }
 Assert-Environment
@@ -809,15 +982,32 @@ if ($InstallPath -eq [IO.Path]::GetPathRoot($InstallPath).TrimEnd('\') -or
     $InstallPath -eq [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')) {
     throw 'Escolha uma pasta dedicada de instalacao, diferente da raiz do disco e do codigo fonte.'
 }
+Assert-CleanupInstallPath $InstallPath
 # Back up only files owned by the installer. Never delete the user's whole folder.
 $rollbackRoot = Join-Path ([IO.Path]::GetTempPath()) ('spvc-install-' + [guid]::NewGuid().ToString('N'))
 $managedFiles = @($script:RequiredFiles) + @('config/config.json', 'release-manifest.json')
 $backups = @{}
 $written = [Collections.Generic.List[string]]::new()
+$removeBackups = $false
+$installationLock = $null
+$stage = 'preparar dependencias'
+$installLog = Join-Path ([IO.Path]::GetTempPath()) ('spvc-install-' + [guid]::NewGuid().ToString('N') + '.log')
+$installTranscript = $false
+$journalPath = Join-Path $InstallPath '.install-recovery.json'
+$journalCreated = $false
 
 try {
+    try { Start-Transcript -LiteralPath $installLog -ErrorAction Stop | Out-Null; $installTranscript = $true }
+    catch { Write-Warning "Nao foi possivel iniciar log '$installLog': $($_.Exception.Message)" }
+    $null = New-Item -ItemType Directory -Path $InstallPath -Force
+    try { $installationLock = [IO.File]::Open((Join-Path $InstallPath '.install.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
+    catch { throw "[SPVC-INSTALL-BUSY] Nao foi possivel bloquear '$InstallPath' para instalacao. Verifique outra instalacao em curso e permissoes. $($_.Exception.Message)" }
+    if (Test-Path -LiteralPath $journalPath) { throw "[SPVC-RECOVERY] Uma instalacao anterior foi interrompida. Revise '$journalPath', que indica os backups para recuperar arquivos e tarefas. Preserve esses backups; remova o marcador somente depois de concluir a recuperacao." }
     Ensure-PnPModule
     New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
+    $stage = 'suspender agendamentos existentes'
+    Suspend-CleanupInstallationTasks -Destination $InstallPath
+    $stage = 'preservar instalacao anterior'
     foreach ($relative in $managedFiles) {
         $target = Join-Path $InstallPath $relative
         if (Test-Path -LiteralPath $target) {
@@ -826,10 +1016,16 @@ try {
             $backups[$target] = $backup
         }
     }
+    @{ Files = $backups; Tasks = $script:TaskBackups } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $rollbackRoot 'recovery.json') -Encoding utf8
+    @{ BackupRoot = $rollbackRoot; RecoveryFile = (Join-Path $rollbackRoot 'recovery.json'); StartedAt = (Get-Date).ToString('o') } |
+        ConvertTo-Json | Set-Content -LiteralPath $journalPath -Encoding utf8
+    $journalCreated = $true
     foreach ($relative in $managedFiles) { $written.Add((Join-Path $InstallPath $relative)) }
+    $stage = 'copiar e verificar componentes'
     Copy-ProjectFiles -Destination $InstallPath
     . (Join-Path $InstallPath 'scripts/Configuration.ps1')
     . (Join-Path $InstallPath 'scripts/TaskIdentity.ps1')
+    $stage = 'preencher e validar configuracao'
     $configuration = New-Configuration -Destination $InstallPath
     $configPath = Join-Path $InstallPath 'config/config.json'
     $configuration | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
@@ -838,36 +1034,38 @@ try {
         New-Item -ItemType Directory -Path (Join-Path $InstallPath $folder) -Force | Out-Null
     }
     $cert = Get-ChildItem Cert:\CurrentUser\My,Cert:\LocalMachine\My | Where-Object Thumbprint -EQ $configuration.Authentication.CertificateThumbprint | Select-Object -First 1
-    if (-not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) {
+    if (-not $cert -or -not $cert.HasPrivateKey -or $cert.NotAfter -le (Get-Date) -or $cert.NotBefore -gt (Get-Date)) {
         throw 'Certificado sem chave privada ou fora da validade.'
     }
+    $stage = 'preparar e testar LOCAL SERVICE'
     Initialize-CleanupServiceIdentity -Configuration $configuration -Destination $InstallPath
     Test-CleanupServiceExecution -Configuration $configuration -Destination $InstallPath
+    $stage = 'validar simulacao e piloto'
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
+    $stage = 'registrar agendamentos'
     Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
+    foreach ($oldName in $script:TaskBackups.Keys) {
+        $index = 0
+        if ([int]::TryParse(($oldName -split ' - ')[-1], [ref]$index) -and $index -gt $configuration.Sites.Count) {
+            Write-Warning "Tarefa antiga '$oldName' mantida desabilitada: o site nao faz parte do novo agendamento."
+        }
+    }
+    $removeBackups = $true
     Write-Host "Instalacao concluida em $InstallPath. Escopos em producao: $($productionSites.Count); restantes em simulacao." -ForegroundColor Green
 } catch {
     $originalError = $_
-    foreach ($taskName in $script:NewTasks) {
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Continue
-    }
-    foreach ($entry in $script:TaskBackups.GetEnumerator()) {
-        # Restore previous actions/triggers using the passwordless service identity.
-        # A password-based legacy principal cannot be restored without its password.
-        $restoredXml = ConvertTo-CleanupServiceTaskXml -Xml $entry.Value
-        Register-ScheduledTask -TaskName $entry.Key -Xml $restoredXml -Force -ErrorAction Continue | Out-Null
-    }
-    foreach ($target in $written) {
-        if ($backups.ContainsKey($target)) {
-            Copy-Item -LiteralPath $backups[$target] -Destination $target -Force -ErrorAction Continue
-        } else {
-            Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
-        }
-    }
+    $removeBackups = Restore-CleanupInstallation -Backups $backups -Written $written.ToArray() -RollbackRoot $rollbackRoot
+    Write-Warning "[SPVC-INSTALL] Falha na etapa '$stage'. Destino: $InstallPath. Log: $installLog. Erro original: $($originalError.Exception.Message)"
     Write-Warning 'Instalacao interrompida. Registro Entra, certificado e modulo instalado podem exigir revisao administrativa.'
     throw $originalError
 } finally {
     # Only the exact per-file backups and our empty temporary directory are removed.
-    foreach ($backup in $backups.Values) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
-    if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -ErrorAction SilentlyContinue }
+    if ($removeBackups) {
+        if ($journalCreated) { Remove-Item -LiteralPath $journalPath -Force -ErrorAction SilentlyContinue }
+        foreach ($backup in $backups.Values) { Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue }
+        Remove-Item -LiteralPath (Join-Path $rollbackRoot 'recovery.json') -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $rollbackRoot) { Remove-Item -LiteralPath $rollbackRoot -ErrorAction SilentlyContinue }
+    }
+    if ($installationLock) { $installationLock.Dispose() }
+    if ($installTranscript) { try { Stop-Transcript | Out-Null } catch { Write-Warning "Falha ao encerrar log: $($_.Exception.Message)" } }
 }

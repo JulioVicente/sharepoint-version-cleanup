@@ -1,6 +1,6 @@
 # Testes
 
-Execute em PowerShell 7.4+ com Pester 5.7.1 ou superior:
+Execute em PowerShell 7.4.6+ com Pester 5.7.1 ou superior:
 
 ```powershell
 Install-PSResource Pester -Version 5.7.1 -Scope CurrentUser

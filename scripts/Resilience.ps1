@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 function Invoke-WithRetry {
     [CmdletBinding()]
     param([Parameter(Mandatory)][scriptblock]$Operation, [Parameter(Mandatory)][System.Collections.IDictionary]$Settings, [scriptblock]$OnRetry)
@@ -14,6 +14,8 @@ function Invoke-WithRetry {
             for ($current = $exception; $null -ne $current; $current = $current.InnerException) {
                 if ($current.PSObject.Properties.Name -contains 'StatusCode' -and $current.StatusCode) { $status = [int]$current.StatusCode }
                 if ($current -is [TimeoutException] -or $current -is [Net.Sockets.SocketException]) { $transient = $true }
+                if ($current -is [Net.Http.HttpRequestException] -and -not $current.StatusCode) { $transient = $true }
+                if ($current -is [Threading.Tasks.TaskCanceledException]) { $transient = $true }
                 if ($current -is [Net.WebException] -and $current.Status -in 'Timeout','ConnectFailure','ConnectionClosed','ReceiveFailure','SendFailure') { $transient = $true }
                 if ($current.PSObject.Properties.Name -contains 'Response' -and $current.Response) {
                     $response = $current.Response

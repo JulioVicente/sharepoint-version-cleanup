@@ -2,7 +2,7 @@
 
 ## Dependências
 
-Execute `scripts/Validate-Prerequisites.ps1` no PowerShell 7. O diagnóstico é somente de leitura; não instala pacotes nem altera o sistema. Use `-SkipNetworkCheck` para verificar somente o ambiente local. O bootstrap instala PowerShell via WinGet quando necessário; o wizard instala/atualiza PnP.PowerShell. Falhas de download/importação são exibidas e interrompem a instalação.
+Execute `scripts/Validate-Prerequisites.ps1` no PowerShell 5.1 ou 7. O diagnóstico não instala pacotes; testa inclusive a importação do módulo na sessão. Use `-SkipNetworkCheck` para verificar somente o ambiente local e `-PassThru` para obter os resultados como objetos. Cada falha informa a causa e a ação recomendada. O bootstrap prepara PowerShell 7.4.6+ por WinGet ou MSI oficial assinado; o wizard prepara os módulos compartilhados com PSResourceGet.
 
 ## JSON inválido
 
@@ -24,7 +24,22 @@ Sem `-Apply`, a execução é simulação. `VersionsToKeep` preserva N versões 
 
 ## Lock e checkpoint
 
-A existência do arquivo `.lock` é normal; somente um handle aberto bloqueia outra execução. Não apague lock durante execução. Checkpoints são separados por site, modo e pasta. Checkpoint interrompido com retenção diferente falha explicitamente: pare as tarefas, arquive esse checkpoint e simule novamente. Arquivos de checkpoint antigos `checkpoint-<site>.json` não são reutilizados pelo novo formato.
+A existência do arquivo `.lock` é normal; somente um handle aberto bloqueia outra execução. Não apague lock durante execução. Checkpoints são separados por site, modo e pasta. Mudanças de retenção arquivam automaticamente o checkpoint. Estados locais com JSON inválido são preservados em `.invalid-*.bak` e reconstruídos pela leitura atual do SharePoint. Erro de acesso ao estado não é tratado como corrupção: corrija a permissão ou o armazenamento. Arquivos antigos `checkpoint-<site>.json` não são reutilizados pelo novo formato.
+
+## Códigos de diagnóstico e recuperação
+
+| Código | Ação |
+|---|---|
+| `SPVC-RUNTIME` / `SPVC-DEPENDENCY` | Confira proxy, TLS, rede, espaço e permissões; a mensagem inclui a causa do download/importação. |
+| `SPVC-POLICY` / `SPVC-PREREQUISITE` | Corrija o requisito indicado; políticas corporativas exigem atuação administrativa. |
+| `SPVC-CERTIFICATE` / `SPVC-AUTH` | Confira validade, chave privada, aplicação, tenant e acesso da identidade executora. |
+| `SPVC-PERMISSION` | Confira consentimento, Sites.Selected e restrições do SharePoint. |
+| `SPVC-STORAGE` / `SPVC-REPORT` | Confira espaço, ACLs e caminhos; uma falha de relatório não substitui a causa original da limpeza. |
+| `SPVC-SERVICE` | Consulte o código hexadecimal do Agendador, executável e caminhos informados. |
+| `SPVC-INSTALL-BUSY` | Aguarde a instalação ou tarefa em andamento; confira permissões se não houver execução. |
+| `SPVC-ROLLBACK` / `SPVC-RECOVERY` | Preserve a pasta de backup. `recovery.json` mapeia arquivos e XML das tarefas. Recupere os arquivos antes de reativar tarefas; remova `.install-recovery.json` apenas após concluir. |
+
+O instalador registra a etapa da falha e o log `%TEMP%/spvc-install-*.log`. Falhas fatais da limpeza informam caminhos do log/relatório; eles podem não existir se o próprio disco impedir a gravação. Os relatórios incluem `Diagnostic`, além do erro original. Confirmações de piloto e produção continuam obrigatórias a cada instalação.
 
 O inventário `inventory-*.json` acelera o modo aplicado. Para forçar um levantamento completo, pare as tarefas, arquive o inventário e checkpoint correspondentes e rode novamente. Não altere estado com uma limpeza ativa. A próxima execução completa examina itens novos/alterados.
 
@@ -86,4 +101,4 @@ Periodicidade no assistente: D para diaria, S para semanal (padrao S). No JSON, 
 
 ## v1.3.7: checkpoint de uma politica anterior
 
-Ao alterar a quantidade de versoes mantidas ou a idade minima, o checkpoint antigo e preservado como `.json.policy-<execucao>.bak` na pasta state. A nova execucao reavalia todos os arquivos com a politica atual, sem reutilizar a lista de concluidos anterior. Isso tambem vale para a simulacao; ela continua sem excluir versoes. Checkpoints de outro site, modo ou incompletos continuam sendo recusados. Uma falha de checkpoint e estado local, nao falta de consentimento no Entra.
+Ao alterar a quantidade de versões mantidas ou a idade mínima, o checkpoint antigo é preservado como `.json.policy-<execucao>.bak` na pasta state. A nova execução reavalia os arquivos com a política atual. Isso também vale para a simulação, que continua sem excluir versões. Checkpoints de outro site ou modo são recusados; JSON ou estrutura inválida são preservados para diagnóstico e reconstruídos. Uma falha de checkpoint é estado local, não falta de consentimento no Entra.

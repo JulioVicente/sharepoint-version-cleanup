@@ -1,4 +1,7 @@
 config/config.json
+config/wizard-defaults.json*
+.install.lock
+.install-recovery.json
 certificates/
 *.pfx
 *.p12

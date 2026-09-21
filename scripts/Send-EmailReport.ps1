@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 [CmdletBinding(DefaultParameterSetName = 'Report')]
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
@@ -83,12 +83,12 @@ if (-not $Test -and $report.LogPath -and (Test-Path -LiteralPath $report.LogPath
         $message.body.content += '<p>O log excedeu o limite de anexo de 2 MB e permanece no computador executor.</p>'
     }
 }
-Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -ErrorAction Stop
-$connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
-    -ClientId $config.Authentication.ClientId -Thumbprint $config.Authentication.CertificateThumbprint `
-    -ReturnConnection -ErrorAction Stop
 $payload = @{ message = $message; saveToSentItems = $true } | ConvertTo-Json -Depth 10
 try {
+    Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -ErrorAction Stop
+    $connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
+        -ClientId $config.Authentication.ClientId -Thumbprint $config.Authentication.CertificateThumbprint `
+        -ReturnConnection -ErrorAction Stop
     # Send the serialized JSON bytes directly: no second serialization by the PnP object-content adapter.
     $accessToken = Get-PnPAccessToken -ResourceTypeName Graph -Connection $connection -ErrorAction Stop
     $secureToken = if ($accessToken -is [Security.SecureString]) { $accessToken } else {

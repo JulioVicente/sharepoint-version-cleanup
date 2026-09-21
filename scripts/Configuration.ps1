@@ -1,6 +1,7 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 # Shared validation; dot-sourcing this file has no external effects.
 . (Join-Path $PSScriptRoot 'Progress.ps1')
+. (Join-Path $PSScriptRoot 'Diagnostics.ps1')
 function ConvertTo-SiteUrl {
     param([Parameter(Mandatory)][string]$Value)
     $uri = $null
@@ -18,7 +19,8 @@ function Read-CleanupConfiguration {
         [Parameter(Mandatory, Position = 0, ParameterSetName = 'File')][string]$Path,
         [Parameter(Mandatory, ParameterSetName = 'Values')][hashtable]$Values
     )
-    $value = if ($PSCmdlet.ParameterSetName -eq 'Values') { $Values } else { Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable }
+    try { $value = if ($PSCmdlet.ParameterSetName -eq 'Values') { $Values } else { Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop } }
+    catch { throw [InvalidOperationException]::new("[SPVC-CONFIG] Nao foi possivel ler o JSON '$Path'. Confira existencia, acesso e sintaxe. Erro original: $($_.Exception.Message)", $_.Exception) }
     if ($value -isnot [Collections.IDictionary]) { throw 'A raiz do JSON deve ser um objeto.' }
     if (-not $value.ContainsKey('SchemaVersion')) { $value.SchemaVersion = 1 }
     if ($value.SchemaVersion -notin 1,2) { throw 'SchemaVersion suportado: 1 ou 2.' }
@@ -53,11 +55,15 @@ function Read-CleanupConfiguration {
     if ($value.Sampling.Enabled -isnot [bool]) { throw 'Sampling.Enabled deve ser booleano.' }
     if ($value.Audit.CopyDirectory -and -not [IO.Path]::IsPathFullyQualified($value.Audit.CopyDirectory)) { throw 'Audit.CopyDirectory deve ser absoluto ou UNC.' }
     if (-not $value.ContainsKey('Schedule')) { $value.Schedule = @{ Frequency = 'semanal'; Time = '22:00' } }
+    if ($value.Schedule -isnot [Collections.IDictionary]) { throw 'Schedule deve ser um objeto.' }
     if ($value.Schedule.Frequency -notin 'diaria','semanal' -or $value.Schedule.Time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {
         throw 'Schedule exige Frequency diaria/semanal e Time HH:mm.'
     }
     foreach ($key in 'Tenant','Sites','VersionsToKeep','Authentication','Paths') {
         if (-not $value.ContainsKey($key)) { throw "Configuracao obrigatoria ausente: $key" }
+    }
+    foreach ($section in 'Authentication','Paths','Schedule') {
+        if ($value[$section] -isnot [Collections.IDictionary]) { throw "$section deve ser um objeto." }
     }
     if ([string]::IsNullOrWhiteSpace($value.Tenant)) { throw 'Tenant obrigatorio.' }
     if ($value.VersionsToKeep -isnot [long] -and $value.VersionsToKeep -isnot [int]) {
@@ -91,6 +97,7 @@ function Read-CleanupConfiguration {
         }
     }
     if (-not $value.ContainsKey('Email')) { $value.Email = @{ Enabled = $false } }
+    if ($value.Email -isnot [Collections.IDictionary]) { throw 'Email deve ser um objeto.' }
     if ($value.Email.Enabled -isnot [bool]) { throw 'Email.Enabled deve ser booleano.' }
     if ($value.Email.Enabled) {
         if (-not $value.Email.ContainsKey('Provider') -or $value.Email.Provider -ne 'Graph') { throw 'Email.Provider deve ser Graph. Reconfigure o email pelo assistente; SMTP nao e mais utilizado.' }

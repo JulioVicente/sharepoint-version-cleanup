@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 function Invoke-CleanupActivity {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Message, [Parameter(Mandatory)][scriptblock]$Action)

@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 [CmdletBinding(DefaultParameterSetName = 'Path')]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Config')][string]$ConfigPath,

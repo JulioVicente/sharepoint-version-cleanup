@@ -23,6 +23,14 @@ Describe 'Tentativas limitadas' {
         $counter.Attempts | Should -Be 1
         Should -Invoke Start-Sleep -Times 0
     }
+    It 'repete falha transitoria do HttpClient moderno' {
+        Invoke-WithRetry -Settings $settings -Operation {
+            $counter.Attempts++
+            if ($counter.Attempts -eq 1) { throw [Net.Http.HttpRequestException]::new('connection reset') }
+        }
+        $counter.Attempts | Should -Be 2
+        Should -Invoke Start-Sleep -Times 1
+    }
     It 'encerra apos esgotar tentativas' {
         { Invoke-WithRetry -Settings $settings -Operation { $counter.Attempts++; throw [TimeoutException]::new('timeout') } } | Should -Throw
         $counter.Attempts | Should -Be 3

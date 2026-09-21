@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 function Get-SamplingWeight {
     param($Item, [System.Collections.IDictionary]$Settings, [datetime]$Now = [datetime]::UtcNow)
     $bytes = 0L

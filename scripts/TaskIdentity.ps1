@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 # LOCAL SERVICE authenticates to Microsoft 365 with the application certificate.
 function Assert-CleanupLocalPath {
     param([string]$Path)
@@ -96,7 +96,7 @@ function Initialize-CleanupServiceIdentity {
     $root = [IO.Path]::GetFullPath($Destination).TrimEnd('\')
     Assert-CleanupLocalPath $root
     # Refuse links before changing any ACL; do not traverse junctions outside this installation.
-    $entries = @(Get-ChildItem -LiteralPath $root -Recurse -Force)
+    $entries = @(Get-ChildItem -LiteralPath $root -Recurse -Force | Where-Object { $_.FullName -ne (Join-Path $root '.install.lock') })
     if (@($entries | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count) { throw 'A instalacao contem links/redirecionamentos; use uma pasta local dedicada.' }
     $writable = @($Configuration.Paths.State,$Configuration.Paths.Logs)
     if ($Configuration.Audit.CopyDirectory) { $writable += $Configuration.Audit.CopyDirectory }
@@ -128,7 +128,7 @@ function Test-CleanupServiceExecution {
     $principal = New-ScheduledTaskPrincipal -UserId $serviceName -LogonType ServiceAccount -RunLevel Limited
     $scriptPath = Join-Path $Destination 'scripts\Test-ServiceContext.ps1'
     $configPath = Join-Path $Destination 'config\config.json'
-    $action = New-ScheduledTaskAction -Execute (Get-Command pwsh.exe).Source -Argument "-NoLogo -NoProfile -NonInteractive -File `"$scriptPath`" -ConfigPath `"$configPath`" -ResultPath `"$resultPath`""
+    $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'pwsh.exe') -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$configPath`" -ResultPath `"$resultPath`""
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
     $registered = $false
     try {
@@ -138,7 +138,11 @@ function Test-CleanupServiceExecution {
         Invoke-CleanupActivity -Message 'Testando execucao sem senha como LOCAL SERVICE...' -Action {
             $deadline = [datetime]::UtcNow.AddMinutes(3)
             while (-not (Test-Path -LiteralPath $resultPath)) {
-                if ([datetime]::UtcNow -ge $deadline) { throw 'Tempo limite no teste da conta de servico. Verifique o Agendador de Tarefas.' }
+                if ([datetime]::UtcNow -ge $deadline) {
+                    $info = Get-ScheduledTaskInfo -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue
+                    $code = if ($info) { '0x{0:X8}' -f [long]$info.LastTaskResult } else { 'indisponivel' }
+                    throw "[SPVC-SERVICE] Tempo limite no teste LOCAL SERVICE. Ultimo resultado do Agendador: $code. Executavel: $($action.Execute). Confira politica de execucao corporativa, acesso ao script '$scriptPath', modulo compartilhado, proxy da conta de servico e log Microsoft-Windows-TaskScheduler/Operational."
+                }
                 Start-Sleep -Seconds 2
             }
         }

@@ -1,4 +1,4 @@
-#requires -Version 7.4
+#requires -Version 7.4.6
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][string]$ConfigPath,
