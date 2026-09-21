@@ -149,6 +149,16 @@ Describe 'Permissoes da chave CNG pelo provedor' {
         $key.Mismatch = $true
         { Set-CleanupCngKeyAcl -Key $key } | Should -Throw '*nao confirmou*'
     }
+    It 'aceita GENERIC_READ combinado com FILE_GENERIC_READ retornado pelo Windows' {
+        $key | Add-Member ScriptMethod GetProperty {
+            param($name,$options)
+            $sd = [Security.AccessControl.RawSecurityDescriptor]::new('D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x80120089;;;LS)')
+            $bytes = [byte[]]::new($sd.BinaryLength)
+            $sd.GetBinaryForm($bytes,0)
+            return [Security.Cryptography.CngProperty]::new($name,$bytes,$options)
+        } -Force
+        { Set-CleanupCngKeyAcl -Key $key } | Should -Not -Throw
+    }
     It 'interrompe com diagnostico especifico se o provedor recusar a ACL' {
         $key.Failure = $true
         { Set-CleanupCngKeyAcl -Key $key } | Should -Throw '*provider unavailable*'

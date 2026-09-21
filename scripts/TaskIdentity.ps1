@@ -45,9 +45,9 @@ function Set-CleanupCngKeyAcl {
         $actual = $Key.GetProperty('Security Descr',[Security.Cryptography.CngPropertyOptions]4).GetValue()
         $readback = [Security.AccessControl.RawSecurityDescriptor]::new($actual,0)
         $serviceRules = @($readback.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq 'S-1-5-19' })
-        # Providers may map GENERIC_READ to FILE_GENERIC_READ.
+        # Providers may map GENERIC_READ to FILE_GENERIC_READ or return both bits.
         if ($serviceRules.Count -ne 1 -or $serviceRules[0].AceQualifier -ne 'AccessAllowed' -or
-            $serviceRules[0].AccessMask -notin @(-2147483648,1179785)) {
+            $serviceRules[0].AccessMask -notin @(-2147483648,1179785,(-2147483648 -bor 1179785))) {
             $observed = $readback.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
             throw "A releitura da chave nao confirmou acesso de leitura para LOCAL SERVICE. DACL recebida: $observed"
         }

@@ -65,7 +65,7 @@ foreach ($kind in 'CAPI','CNG') {
                     $descriptor = $reopened.GetProperty('Security Descr', [Security.Cryptography.CngPropertyOptions]4).GetValue()
                     $acl = [Security.AccessControl.RawSecurityDescriptor]::new($descriptor, 0)
                     $rules = @($acl.DiscretionaryAcl | Where-Object { $_.SecurityIdentifier.Value -eq 'S-1-5-19' })
-                    if ($rules.Count -ne 1 -or $rules[0].AceQualifier -ne 'AccessAllowed' -or $rules[0].AccessMask -notin @(-2147483648,1179785)) {
+                    if ($rules.Count -ne 1 -or $rules[0].AceQualifier -ne 'AccessAllowed' -or $rules[0].AccessMask -notin @(-2147483648,1179785,(-2147483648 -bor 1179785))) {
                         throw 'ACL CNG nao persistiu apos reabrir a chave.'
                     }
                 }
