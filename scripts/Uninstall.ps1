@@ -220,6 +220,7 @@ function Invoke-CleanupUninstall {
         if ($journal) {
             $record.Status = 'Failed'; $record.Error = $_.Exception.Message; $record.FinishedAt = [datetime]::UtcNow.ToString('o')
             try { $record | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $journal -Encoding utf8 } catch { Write-Warning 'Nao foi possivel atualizar o registro da desinstalacao.' }
+            try { Protect-UninstallBackup $backup } catch { Write-Warning "Revise as permissoes do backup parcial: $($_.Exception.Message)" }
         }
         throw "[SPVC-UNINSTALL] Nao concluido. Preserve o backup, se criado: $backup. Tarefas ja desabilitadas permanecem desabilitadas. Causa: $($_.Exception.Message)"
     } finally { if ($lock) { $lock.Dispose() } }

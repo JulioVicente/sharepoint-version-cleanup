@@ -96,6 +96,7 @@ Describe 'Desinstalacao limitada aos componentes locais' {
         $record.Status | Should -Be 'Failed'
         $record.Error | Should -Match 'disk error'
         $record.DisabledTasks | Should -Be @($ownTask.TaskName)
+        Should -Invoke Protect-UninstallBackup -Times 2
         Should -Invoke Unregister-ScheduledTask -Times 0
         Test-Path (Join-Path $installation 'config/config.json') | Should -BeTrue
     }
