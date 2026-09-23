@@ -4,7 +4,7 @@ BeforeAll {
     if (-not (Get-Command Get-PSResourceRepository -ErrorAction SilentlyContinue)) {
         function Get-PSResourceRepository { param($Name) }
         function Register-PSResourceRepository { param([switch]$PSGallery) }
-        function Install-PSResource { param($Name,$Version,$Scope,$Repository,[switch]$TrustRepository,[switch]$Quiet) }
+        function Install-PSResource { param($Name,$Version,$Scope,$Repository,[switch]$TrustRepository,[switch]$Quiet,[switch]$Reinstall) }
     }
     function Register-ScheduledTask { param($TaskName,$TaskPath,$Xml,[switch]$Force) }
     function Unregister-ScheduledTask { param($TaskName,$TaskPath,[switch]$Confirm) }
@@ -21,6 +21,7 @@ Describe 'Preparacao de dependencias' {
             else { [pscustomobject]@{ModuleBase='C:\Users\Someone\Documents\PowerShell\Modules\PnP.PowerShell';Path='user-module.psd1';Version=[version]'3.0.0';PowerShellVersion=[version]'7.4.6'} }
         }
         Mock Import-Module {}
+        Mock Test-CleanupModuleImport {}
         Mock Get-PSResourceRepository { $null }
         Mock Register-PSResourceRepository {}
         Mock Install-PSResource { $script:installedModule = $true }
@@ -36,6 +37,27 @@ Describe 'Preparacao de dependencias' {
         Ensure-CleanupModule PnP.PowerShell 3.0.0 3.0.0
         Should -Invoke Install-PSResource -Times 0
         Should -Invoke Get-PSResourceRepository -Times 0
+    }
+    It 'valida PnP sem carregar assemblies no processo Graph' {
+        $script:installedModule = $true
+        Ensure-CleanupModule PnP.PowerShell 3.0.0 3.0.0 -Isolated | Should -Be (Join-Path $shared 'PnP.PowerShell.psd1')
+        Should -Invoke Test-CleanupModuleImport -Times 1
+        Should -Invoke Import-Module -Times 0
+    }
+    It 'repara pacote quebrado uma vez e valida novamente antes de importar' {
+        $script:installedModule = $true
+        $script:checks = 0
+        Mock Test-CleanupModuleImport { $script:checks++; if ($script:checks -eq 1) { throw 'DLL ausente' } }
+        Ensure-CleanupModule PnP.PowerShell 3.0.0 3.0.0
+        Should -Invoke Install-PSResource -Times 1 -ParameterFilter { $Reinstall -and $Version -eq '3.0.0' }
+        Should -Invoke Test-CleanupModuleImport -Times 2
+    }
+    It 'interrompe com causa original se reparo continuar falhando' {
+        $script:installedModule = $true
+        Mock Test-CleanupModuleImport { throw 'DLL corrompida' }
+        { Ensure-CleanupModule PnP.PowerShell 3.0.0 3.0.0 } | Should -Throw '*SPVC-DEPENDENCY*DLL corrompida*'
+        Should -Invoke Install-PSResource -Times 1 -ParameterFilter { $Reinstall }
+        Should -Invoke Import-Module -Times 0 -ParameterFilter { $Name -like '*PnP.PowerShell.psd1' }
     }
     It 'recusa repositorio com nome oficial e endereco trocado' {
         Mock Get-PSResourceRepository { @{Uri=[uri]'https://example.org/api/v2'} }

@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.2',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.3',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -25,6 +25,8 @@ $script:TaskBackups = @{}
 $script:NewTasks = [Collections.Generic.List[string]]::new()
 $script:WizardDefaults = @{}
 $script:WizardDefaultsPath = $null
+$script:PnPModulePath = $null
+$script:ConfigurationScript = Join-Path $PSScriptRoot 'scripts/Configuration.ps1'
 $script:RequiredFiles = @(
     'scripts/cleanup-versions.ps1',
     'scripts/Send-EmailReport.ps1',
@@ -93,12 +95,57 @@ function Ensure-PnPModule {
     param()
     Write-Step '1 de 5 - Validando e instalando dependencias'
     if ($PSCmdlet.ShouldProcess('PnP.PowerShell', 'Preparar modulo para todos os usuarios')) {
-        Ensure-CleanupModule -Name PnP.PowerShell -MinimumVersion 3.0.0 -InstallVersion 3.0.0
+        $script:PnPModulePath = Ensure-CleanupModule -Name PnP.PowerShell -MinimumVersion 3.0.0 -InstallVersion 3.0.0 -Isolated
     }
 }
 
+function Invoke-CleanupIsolated {
+    param([Parameter(Mandatory)][scriptblock]$Action, [object[]]$ArgumentList = @(), [string]$ModulePath)
+    # Start-Job uses a separate pwsh process without profiles. Runspaces/ThreadJob
+    # share assemblies and cannot isolate the incompatible Graph.Core libraries.
+    $job = Start-Job -ScriptBlock {
+        param($Code, $Arguments, $Manifest)
+        $ErrorActionPreference = 'Stop'
+        if ($Manifest) { Import-Module -Name $Manifest -ErrorAction Stop }
+        & ([scriptblock]::Create($Code)) @Arguments
+    } -ArgumentList $Action.ToString(), $ArgumentList, $ModulePath
+    try {
+        Receive-Job -Job $job -Wait -ErrorAction Stop
+        if ($job.State -ne 'Completed') { throw "Processo isolado terminou em estado $($job.State)." }
+    } finally {
+        if ($job.State -in 'Running','NotStarted','Blocked') { Stop-Job -Job $job }
+        Remove-Job -Job $job -Force
+    }
+}
+
+function Test-CleanupModuleImport {
+    param([string]$Name, [string]$Path)
+    $null = Invoke-CleanupIsolated -ModulePath $Path -ArgumentList @($Name, $Path) -Action {
+        param($ModuleName, $ManifestPath)
+        if ($ModuleName -eq 'Microsoft.Graph.Authentication') {
+            # Graph loads this dependency lazily; validate the shipped DLL explicitly.
+            $assembly = [Reflection.Assembly]::LoadFrom((Join-Path (Split-Path $ManifestPath) 'Dependencies/Core/Microsoft.Graph.Core.dll'))
+            $null = $assembly.GetType('Microsoft.Graph.Authentication.AzureIdentityAccessTokenProvider', $true)
+            $null = Get-Command Invoke-MgGraphRequest -ErrorAction Stop
+        } elseif ($ModuleName -eq 'PnP.PowerShell') {
+            $null = Get-Command Connect-PnPOnline -ErrorAction Stop
+        }
+    }
+}
+
+function Install-CleanupModulePackage {
+    param([string]$Name, [string]$Version, [switch]$Reinstall)
+    Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
+    $repository = Get-PSResourceRepository -Name PSGallery -ErrorAction SilentlyContinue
+    if (-not $repository) { Register-PSResourceRepository -PSGallery -ErrorAction Stop }
+    elseif ($repository.Uri.AbsoluteUri.TrimEnd('/') -ne 'https://www.powershellgallery.com/api/v2') {
+        throw 'PSGallery aponta para um endereco diferente do oficial. Revise Get-PSResourceRepository.'
+    }
+    Install-PSResource -Name $Name -Version $Version -Scope AllUsers -Repository PSGallery -TrustRepository -Quiet -Reinstall:$Reinstall -ErrorAction Stop
+}
+
 function Ensure-CleanupModule {
-    param([string]$Name, [version]$MinimumVersion, [string]$InstallVersion)
+    param([string]$Name, [version]$MinimumVersion, [string]$InstallVersion, [switch]$Isolated)
     $sharedModuleRoot = Join-Path $env:ProgramFiles 'PowerShell\Modules'
     # A customized PSModulePath must not hide the modules from the installer.
     if ($sharedModuleRoot -notin ($env:PSModulePath -split [IO.Path]::PathSeparator)) {
@@ -108,26 +155,33 @@ function Ensure-CleanupModule {
     if ($builtInModuleRoot -notin ($env:PSModulePath -split [IO.Path]::PathSeparator)) {
         $env:PSModulePath = "$builtInModuleRoot$([IO.Path]::PathSeparator)$env:PSModulePath"
     }
-    $module = Get-Module -ListAvailable $Name | Where-Object {
+    $module = Get-Module -ListAvailable $Name -ErrorAction SilentlyContinue | Where-Object {
         $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and
         $_.Version -ge $MinimumVersion -and $_.Version.Major -eq $MinimumVersion.Major -and (!$_.PowerShellVersion -or $_.PowerShellVersion -le $PSVersionTable.PSVersion)
     } | Sort-Object Version -Descending | Select-Object -First 1
     try {
         if (-not $module) {
-            # PSResourceGet ships with PowerShell 7.4; it needs neither NuGet bootstrap nor PowerShellGet.
-            Import-Module Microsoft.PowerShell.PSResourceGet -ErrorAction Stop
-            $repository = Get-PSResourceRepository -Name PSGallery -ErrorAction SilentlyContinue
-            if (-not $repository) { Register-PSResourceRepository -PSGallery -ErrorAction Stop }
-            elseif ($repository.Uri.AbsoluteUri.TrimEnd('/') -ne 'https://www.powershellgallery.com/api/v2') {
-                throw 'PSGallery aponta para um endereco diferente do oficial. Revise Get-PSResourceRepository.'
-            }
-            Install-PSResource -Name $Name -Version $InstallVersion -Scope AllUsers -Repository PSGallery -TrustRepository -Quiet -ErrorAction Stop
+            # Reinstall also repairs a partial folder whose manifest could not be discovered.
+            Install-CleanupModulePackage -Name $Name -Version $InstallVersion -Reinstall
             $module = Get-Module -ListAvailable $Name | Where-Object {
                 $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$InstallVersion
             } | Select-Object -First 1
             if (-not $module) { throw "Instalacao nao disponibilizou $Name $InstallVersion em $sharedModuleRoot." }
         }
-        # Import the shared manifest, never a same-name CurrentUser module.
+        try { Test-CleanupModuleImport -Name $Name -Path $module.Path }
+        catch {
+            $repairVersion = $module.Version.ToString()
+            Write-Warning "Dependencia $Name nao carregou: $($_.Exception.Message). Reparando a versao $repairVersion pela PSGallery."
+            Install-CleanupModulePackage -Name $Name -Version $repairVersion -Reinstall
+            $module = Get-Module -ListAvailable $Name | Where-Object {
+                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$repairVersion
+            } | Select-Object -First 1
+            if (-not $module) { throw "Reparo nao disponibilizou $Name $repairVersion." }
+            Test-CleanupModuleImport -Name $Name -Path $module.Path
+        }
+        Write-Host "Dependencia validada: $Name $($module.Version) | $($module.Path)"
+        # PnP must never enter the Graph authentication process.
+        if ($Isolated) { return $module.Path }
         Import-Module -Name $module.Path -Force -ErrorAction Stop
     } catch {
         throw [InvalidOperationException]::new("[SPVC-DEPENDENCY] Falha ao preparar $Name para todos os usuarios. PowerShell: $($PSVersionTable.PSVersion); destino: $sharedModuleRoot. Verifique acesso HTTPS a powershellgallery.com, proxy/TLS, espaco em disco e permissao administrativa. Se houver conflito de assemblies, execute bootstrap.ps1 em um novo processo. Erro original: $($_.Exception.Message)", $_.Exception)
@@ -199,7 +253,10 @@ function Get-CleanupTenantContext {
     param([string]$SiteUrl)
     $siteUri = [uri]$SiteUrl
     try {
-        $tenantId = [guid](Get-PnPTenantId -TenantUrl $siteUri.Host -ErrorAction Stop)
+        $tenantId = [guid](Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($siteUri.Host) -Action {
+            param($TenantHost)
+            Get-PnPTenantId -TenantUrl $TenantHost -ErrorAction Stop
+        })
         if ($tenantId -eq [guid]::Empty) { throw 'Tenant nao identificado.' }
         $tenant = $tenantId.ToString()
         Write-Host "Tenant identificado pelo SharePoint: $tenant"
@@ -247,6 +304,8 @@ function Connect-CleanupSetup {
     Ensure-CleanupModule -Name Microsoft.Graph.Authentication -MinimumVersion 2.0.0 -InstallVersion 2.25.0
     $login = @{ TenantId = $Tenant; Scopes = @('Application.ReadWrite.All','Sites.FullControl.All','User.Read'); ContextScope = 'Process'; NoWelcome = $true; ErrorAction = 'Stop' }
     if ($AdminClientId) { $login.ClientId = $AdminClientId }
+    Write-Host 'Este login autoriza a configuracao com sua conta administrativa. A caixa de consentimento para toda a organizacao pode nao reaparecer se ja houver autorizacao registrada.'
+    Write-Host 'Para revisar essa autorizacao: Entra > Aplicativos empresariais > aplicativo mostrado no login > Permissoes. O consentimento do aplicativo de limpeza para funcionar como servico sera tratado separadamente.'
     Connect-MgGraph @login | Out-Null
 }
 
@@ -344,15 +403,17 @@ function Connect-CleanupSite {
         [ValidateRange(1,12)][int]$MaxAttempts = 6, [ValidateRange(0,30)][int]$DelaySeconds = 10)
     for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
         try {
-            $connection = Invoke-CleanupActivity -Message 'Conectando ao SharePoint...' -Action {
-                Connect-PnPOnline -Url $SiteUrl -Tenant $Tenant -ClientId $Authentication.ClientId `
-                    -Thumbprint $Authentication.CertificateThumbprint -ReturnConnection -ErrorAction Stop
+            $configurationScript = $script:ConfigurationScript
+            Invoke-CleanupActivity -Message 'Validando conexao e bibliotecas no SharePoint...' -Action {
+                Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($SiteUrl, $Tenant, $Authentication, $FolderServerRelativeUrl, $configurationScript) -Action {
+                    param($Url, $TenantId, $Auth, $Folder, $ConfigurationScript)
+                    . $ConfigurationScript
+                    $connection = Connect-PnPOnline -Url $Url -Tenant $TenantId -ClientId $Auth.ClientId -Thumbprint $Auth.CertificateThumbprint -ReturnConnection -ErrorAction Stop
+                    $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
+                    $null = Get-CleanupLibraries -SiteUrl $Url -FolderServerRelativeUrl $Folder -Connection $connection
+                }
             }
-            Invoke-CleanupActivity -Message 'Validando acesso as bibliotecas...' -Action {
-                $null = Get-PnPWeb -Connection $connection -ErrorAction Stop
-                $null = Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $FolderServerRelativeUrl -Connection $connection
-            }
-            return $connection
+            return $true
         } catch {
             if ($_.Exception.Message -notmatch 'AADSTS700027' -or $attempt -eq $MaxAttempts) { throw }
             Write-Warning "O servico de autenticacao ainda nao reconheceu a chave. Nova tentativa $($attempt + 1) de $MaxAttempts em $DelaySeconds segundos, usando o mesmo certificado."
@@ -471,7 +532,10 @@ function Test-CleanupEmailConfiguration {
     try {
         @{ Tenant = $Tenant; Sites = $Sites; Authentication = $Authentication; Email = $Email } |
             ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $testConfig -Encoding utf8
-        & (Join-Path $Destination 'scripts/Send-EmailReport.ps1') -ConfigPath $testConfig -Test
+        Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @((Join-Path $Destination 'scripts/Send-EmailReport.ps1'), $testConfig) -Action {
+            param($ScriptPath, $ConfigPath)
+            & $ScriptPath -ConfigPath $ConfigPath -Test
+        }
     } finally {
         if (Test-Path -LiteralPath $testConfig) { Remove-Item -LiteralPath $testConfig -ErrorAction Stop }
     }
@@ -819,7 +883,10 @@ function Invoke-SetupValidation {
         }
         while ($true) {
             try {
-                $report = & $installedCleanup @cleanupArguments
+                $report = Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($installedCleanup, $cleanupArguments) -Action {
+                    param($ScriptPath, $Parameters)
+                    & $ScriptPath @Parameters
+                }
                 break
             } catch {
                 Write-Host "Nao foi possivel concluir: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -836,7 +903,10 @@ function Invoke-SetupValidation {
         if ($report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
             (Read-YesNo 'Aprova excluir as versoes antigas neste escopo para validar o piloto? A exclusao e permanente')) {
             $cleanupArguments.Apply = $true
-            $applied = & $installedCleanup @cleanupArguments
+            $applied = Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($installedCleanup, $cleanupArguments) -Action {
+                param($ScriptPath, $Parameters)
+                & $ScriptPath @Parameters
+            }
             Show-CleanupSummary $applied
             if ($applied.Success -and $applied.VersionsDeleted -gt 0 -and $applied.FilesSkipped -eq 0 -and
                 (Read-YesNo 'Piloto aprovado. Ativar execucoes incrementais agendadas neste escopo?')) {
@@ -1023,7 +1093,8 @@ try {
     foreach ($relative in $managedFiles) { $written.Add((Join-Path $InstallPath $relative)) }
     $stage = 'copiar e verificar componentes'
     Copy-ProjectFiles -Destination $InstallPath
-    . (Join-Path $InstallPath 'scripts/Configuration.ps1')
+    $script:ConfigurationScript = Join-Path $InstallPath 'scripts/Configuration.ps1'
+    . $script:ConfigurationScript
     . (Join-Path $InstallPath 'scripts/TaskIdentity.ps1')
     $stage = 'preencher e validar configuracao'
     $configuration = New-Configuration -Destination $InstallPath

@@ -4,6 +4,22 @@
 
 Execute `scripts/Validate-Prerequisites.ps1` no PowerShell 5.1 ou 7. O diagnóstico não instala pacotes; testa inclusive a importação do módulo na sessão. Use `-SkipNetworkCheck` para verificar somente o ambiente local e `-PassThru` para obter os resultados como objetos. Cada falha informa a causa e a ação recomendada. O bootstrap prepara PowerShell 7.4.6+ por WinGet ou MSI oficial assinado; o wizard prepara os módulos compartilhados com PSResourceGet.
 
+### Conflito Microsoft.Graph.Core e instalações incompletas
+
+`Could not load type 'Microsoft.Graph.Authentication.AzureIdentityAccessTokenProvider' ... Microsoft.Graph.Core, Version=1.25.1.0` indica conflito de bibliotecas locais. Não é resolvido concedendo consentimento ou recriando certificado. PnP.PowerShell e Microsoft.Graph.Authentication podem exigir versões incompatíveis dessa DLL quando usados no mesmo processo.
+
+O instalador atualizado mantém o Graph no processo do assistente e executa as operações PnP (descoberta do tenant, validação, email, simulação e piloto) em processos separados, sem perfis. Antes do login, cada módulo é importado em um processo de teste; no Graph também é verificada a presença do tipo necessário. A versão e o caminho validados aparecem no log. Uma falha de importação dispara uma reinstalação da mesma versão na PSGallery oficial e uma nova validação. Se o reparo falhar, a instalação para com `SPVC-DEPENDENCY` e a causa original.
+
+Execute novamente o comando de instalação de `main` como Administrador. O bootstrap abre um PowerShell novo, evitando DLLs carregadas por tentativas manuais anteriores. Não é necessário desinstalar todos os módulos Graph/PnP: versões de outros usuários e demais módulos são preservados. Bloqueios de rede, políticas ou permissões podem exigir correção administrativa; o reparo não contorna essas restrições.
+
+### A caixa “Consentir em nome da organização” não reaparece
+
+O Entra pode reutilizar consentimento já registrado e não exibir novamente a caixa. O instalador não força essa tela nem concede consentimento organizacional automaticamente. Para revisar ou conceder depois, um administrador autorizado pode abrir **Entra → Aplicativos empresariais → aplicativo mostrado no login → Permissões → Conceder consentimento do administrador**. Confira o aplicativo e as permissões antes de aprovar. O login padrão do assistente usa o cliente do Microsoft Graph PowerShell; com `-AdminClientId`, usa o cliente informado.
+
+Essa autorização de login é diferente da autorização do serviço. O aplicativo **SharePoint Version Cleanup** precisa de consentimento administrativo para a permissão de aplicativo SharePoint `Sites.Selected` e, se o email via Graph estiver habilitado, Microsoft Graph `Mail.Send`. A concessão `Write` nos sites escolhidos também é necessária. O assistente verifica/configura essas etapas separadamente. Desmarcar a caixa no login não explica um erro de DLL local.
+
+Consulte [como conceder consentimento administrativo no Microsoft Entra](https://learn.microsoft.com/en-us/entra/identity/enterprise-apps/grant-admin-consent).
+
 ## JSON inválido
 
 Consulte [CONFIGURATION.md](CONFIGURATION.md). Verifique tipos, GUID, thumbprint, URLs, escopo e caminhos absolutos. Rode o validador local antes da limpeza. URLs de telas (`Forms/AllItems.aspx`) não representam a URL do site nem o caminho da biblioteca.

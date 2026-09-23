@@ -9,9 +9,9 @@ BeforeAll {
 }
 
 Describe 'Descoberta automatica no instalador' {
-    BeforeEach { Mock Get-CleanupLibraries {} }
+    BeforeEach { Mock Get-CleanupLibraries {}; Mock Connect-CleanupSite { $true } }
     It 'descobre tenant sem perguntar dominio ou URL administrativa' {
-        Mock Get-PnPTenantId { '22222222-2222-2222-2222-222222222222' }
+        Mock Invoke-CleanupIsolated { '22222222-2222-2222-2222-222222222222' }
         Mock Read-Host { throw 'Nao deve perguntar' }
         $context = Get-CleanupTenantContext 'https://contoso.sharepoint.com/sites/piloto'
         $context.Tenant | Should -Be '22222222-2222-2222-2222-222222222222'
@@ -19,7 +19,7 @@ Describe 'Descoberta automatica no instalador' {
         Should -Invoke Read-Host -Times 0
     }
     It 'solicita tenant somente quando descoberta falha' {
-        Mock Get-PnPTenantId { throw 'Indisponivel' }
+        Mock Invoke-CleanupIsolated { throw 'Indisponivel' }
         Mock Read-Host { 'contoso.onmicrosoft.com' }
         (Get-CleanupTenantContext 'https://contoso.sharepoint.com').Tenant | Should -Be 'contoso.onmicrosoft.com'
         Should -Invoke Read-Host -Times 1
@@ -220,6 +220,7 @@ Describe 'URLs de bibliotecas e pastas' {
         Should -Invoke Invoke-SetupGraph -Times 2
     }
     It 'wizard concede acesso ao site pai e grava a pasta sem ampliar escopo' {
+        Mock Connect-CleanupSite { $true }
         Mock Get-CleanupTenantContext { @{Tenant='contoso.onmicrosoft.com';AdminUrl='https://contoso-admin.sharepoint.com'} }
         Mock Connect-CleanupSetup {}
         Mock Test-CleanupFolderAccess { param($SiteUrl,$Folder) $Folder }
@@ -320,12 +321,9 @@ Describe 'Confirmacao do certificado registrado' {
 Describe 'Validade UTC e propagacao de certificados' {
     BeforeEach { Mock Get-CleanupLibraries {} }
     It 'valida a biblioteca com a mesma conexao e escopo antes de aceitar acesso' {
-        Mock Connect-PnPOnline { 'connection' }
-        Mock Get-PnPWeb {}
-        Mock Get-CleanupLibraries { throw 'Acesso negado a biblioteca' }
+        Mock Invoke-CleanupIsolated { throw 'Acesso negado a biblioteca' }
         { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} -FolderServerRelativeUrl '/docs' } | Should -Throw '*Acesso negado*'
-        Should -Invoke Get-CleanupLibraries -Times 1 -ParameterFilter { $Connection -eq 'connection' -and $FolderServerRelativeUrl -eq '/docs' }
-        Should -Invoke Connect-PnPOnline -Times 1
+        Should -Invoke Invoke-CleanupIsolated -Times 1 -ParameterFilter { $ArgumentList[0] -eq 'https://contoso.sharepoint.com' -and $ArgumentList[3] -eq '/docs' -and $ArgumentList[2].ClientId -eq $appId }
     }
     It 'compara instantes UTC e offsets locais sem deslocar o inicio da validade' {
         $expected = [datetime]::SpecifyKind([datetime]'2026-09-17T18:48:25', [DateTimeKind]::Utc)
@@ -350,33 +348,31 @@ Describe 'Validade UTC e propagacao de certificados' {
     }
     It 'repete autenticacao com o mesmo certificado durante propagacao' {
         $script:authAttempts=0
-        Mock Connect-PnPOnline {
+        Mock Invoke-CleanupIsolated {
             $script:authAttempts++
             if ($script:authAttempts -lt 3) { throw 'AADSTS700027: key not found' }
-            'ready-connection'
         }
         Mock Get-PnPWeb {}
         Mock Start-Sleep {}
         Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} |
-            Should -Be 'ready-connection'
-        Should -Invoke Connect-PnPOnline -Times 3 -ParameterFilter { $ClientId -eq $appId -and $Thumbprint -eq $thumb }
+            Should -BeTrue
+        Should -Invoke Invoke-CleanupIsolated -Times 3 -ParameterFilter { $ArgumentList[2].ClientId -eq $appId -and $ArgumentList[2].CertificateThumbprint -eq $thumb }
         Should -Invoke Start-Sleep -Times 2
-        Should -Invoke Get-PnPWeb -Times 1
     }
     It 'encerra automaticamente apos limite de tentativas da chave' {
-        Mock Connect-PnPOnline { throw 'AADSTS700027: key not found' }
+        Mock Invoke-CleanupIsolated { throw 'AADSTS700027: key not found' }
         Mock Start-Sleep {}
         { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} -MaxAttempts 3 } |
             Should -Throw '*AADSTS700027*'
-        Should -Invoke Connect-PnPOnline -Times 3
+        Should -Invoke Invoke-CleanupIsolated -Times 3
         Should -Invoke Start-Sleep -Times 2
     }
     It 'nao repete automaticamente negacao de acesso como se fosse propagacao de chave' {
-        Mock Connect-PnPOnline { throw '403 Forbidden' }
+        Mock Invoke-CleanupIsolated { throw '403 Forbidden' }
         Mock Start-Sleep {}
         { Connect-CleanupSite -SiteUrl 'https://contoso.sharepoint.com' -Tenant contoso.onmicrosoft.com -Authentication @{ClientId=$appId;CertificateThumbprint=$thumb} } |
             Should -Throw '*403*'
-        Should -Invoke Connect-PnPOnline -Times 1
+        Should -Invoke Invoke-CleanupIsolated -Times 1
         Should -Invoke Start-Sleep -Times 0
     }
 }
