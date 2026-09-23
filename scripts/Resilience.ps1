@@ -1,10 +1,11 @@
 #requires -Version 7.4.6
 function Invoke-WithRetry {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][scriptblock]$Operation, [Parameter(Mandatory)][System.Collections.IDictionary]$Settings, [scriptblock]$OnRetry)
+    param([Parameter(Mandatory)][scriptblock]$Operation, [Parameter(Mandatory)][System.Collections.IDictionary]$Settings, [scriptblock]$OnRetry, [scriptblock]$OnRecovered)
     for ($attempt = 0; ; $attempt++) {
         try {
             $result = @(& $Operation)
+            if ($attempt -gt 0 -and $OnRecovered) { & $OnRecovered @{ Attempts=$attempt+1; Retries=$attempt } | Out-Null }
             return $result
         } catch {
             $exception = $_.Exception
@@ -16,6 +17,9 @@ function Invoke-WithRetry {
                 if ($current -is [TimeoutException] -or $current -is [Net.Sockets.SocketException]) { $transient = $true }
                 if ($current -is [Net.Http.HttpRequestException] -and -not $current.StatusCode) { $transient = $true }
                 if ($current -is [Threading.Tasks.TaskCanceledException]) { $transient = $true }
+                # PnP may flatten the original TaskCanceledException into a
+                # PowerShell error record; recognize its specific timeout text.
+                if ($current.Message -match 'configured HttpClient\.Timeout of [0-9.,]+ seconds elapsing') { $transient = $true }
                 if ($current -is [Net.WebException] -and $current.Status -in 'Timeout','ConnectFailure','ConnectionClosed','ReceiveFailure','SendFailure') { $transient = $true }
                 if ($current.PSObject.Properties.Name -contains 'Response' -and $current.Response) {
                     $response = $current.Response
@@ -32,6 +36,7 @@ function Invoke-WithRetry {
                 }
             }
             if ($status -in 408,429,500,502,503,504) { $transient = $true }
+            if ($status -ge 400 -and $status -lt 500 -and $status -notin 408,429) { $transient = $false }
             if (-not $transient -or $attempt -ge $Settings.MaxRetries) { throw }
             $delay = [math]::Min($Settings.MaxDelaySeconds, $Settings.BaseDelaySeconds * [math]::Pow(2,$attempt) + (Get-Random -Minimum 0 -Maximum 1000)/1000.0)
             $delay = [math]::Max($delay,$retryAfter)

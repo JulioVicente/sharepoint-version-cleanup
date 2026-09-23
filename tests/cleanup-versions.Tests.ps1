@@ -117,8 +117,14 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/c.docx';Modified=[datetime]'2026-09-01';UniqueId='c';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'conexao interrompida' } -ParameterFilter { $Url -eq '/docs/c.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru } | Should -Throw '*conexao interrompida*'
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru } | Should -Throw '*conexao interrompida*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*conexao interrompida*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*conexao interrompida*'
         Mock Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } } -ParameterFilter { $Url -eq '/docs/c.docx' }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
         $r.Success | Should -BeTrue
@@ -150,7 +156,10 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrompido*'
         $cpPath = (Get-ChildItem $state -Filter '*simulation*.json').FullName
         $cp = Get-Content $cpPath -Raw | ConvertFrom-Json -AsHashtable
         switch ($Case) {
@@ -187,7 +196,10 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrompido*'
         Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/novo.docx';Modified=[datetime]'2026-09-01';UniqueId='novo';_UIVersionString='5.0'} }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
         $r.FilesResumed | Should -Be 0
@@ -202,7 +214,10 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrompido*'
         Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         $r.FilesResumed | Should -Be 0
@@ -227,7 +242,10 @@ Describe 'cleanup-versions.ps1' {
             )
         }
         Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrompido*'
         $cp = Get-Content (Get-ChildItem $state -Filter '*simulation*.json').FullName -Raw | ConvertFrom-Json -AsHashtable
         [datetime]$cp.SimulationResults['/docs/a.docx'].ValidUntil | Should -Be $firstTime.AddMinutes(1)
         $clock.Now = $firstTime.AddMinutes(2)
@@ -245,7 +263,10 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrompido*'
         Mock Get-PnPFile { [pscustomobject]@{CheckOutType='Online'} } -ParameterFilter { $Url -eq '/docs/a.docx' }
         Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
@@ -253,6 +274,47 @@ Describe 'cleanup-versions.ps1' {
         $r.FilesSkipped | Should -Be 1
         $r.BytesEligible | Should -Be 0
         Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+    }
+    It 'timeout encapsulado recuperado termina com sucesso e audita recuperacao' {
+        $attempts = @{Count=0}
+        Mock Start-Sleep {}
+        Mock Get-PnPFile {
+            $attempts.Count++
+            if ($attempts.Count -eq 1) { Write-Error 'The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.' -ErrorAction Stop }
+            [pscustomobject]@{CheckOutType='None'}
+        }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Success | Should -BeTrue
+        $r.Status | Should -Be 'Completed'
+        $r.FilesFailed | Should -Be 0
+        $r.Error | Should -BeNullOrEmpty
+        @($r.Errors).Count | Should -Be 0
+        $r.FilesProcessed | Should -Be 1
+        Should -Invoke Get-PnPFile -Times 2 -Exactly
+        $events = @(Get-Content $r.AuditPaths | ForEach-Object { $_ | ConvertFrom-Json })
+        @($events | Where-Object Event -eq 'RequestRetry').Count | Should -Be 1
+        @($events | Where-Object Event -eq 'RequestRecovered').Count | Should -Be 1
+        ($events | Where-Object Event -eq 'RunCompleted').Outcome | Should -Be 'Success'
+        @($events | Where-Object Event -eq 'FileFailed').Count | Should -Be 0
+    }
+    It 'timeout encapsulado esgotado retorna parcial e continua outro arquivo' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Retry = @{MaxRetries=2;BaseDelaySeconds=2;MaxDelaySeconds=60}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Mock Start-Sleep {}
+        Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/fail.docx'},@{FSObjType=0;FileRef='/docs/good.docx'}) }
+        Mock Get-PnPFile { Write-Error 'The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.' -ErrorAction Stop } -ParameterFilter { $Url -eq '/docs/fail.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Status | Should -Be 'Partial'
+        $r.Success | Should -BeFalse
+        $r.FilesProcessed | Should -Be 1
+        $r.FilesFailed | Should -Be 1
+        Test-Path $r.ReportPath | Should -BeTrue
+        Should -Invoke Get-PnPFile -Times 3 -Exactly -ParameterFilter { $Url -eq '/docs/fail.docx' }
+        $daily = & (Join-Path $PSScriptRoot '../scripts/Get-DailyAudit.ps1') -LogsPath $logs
+        $daily.RunsPartial | Should -Be 1
+        $daily.RunsFailed | Should -Be 0
+        $daily.RequestsRecovered | Should -Be 0
     }
     It 'remove somente versoes excedentes quando Apply e informado' {
         & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply
@@ -392,7 +454,10 @@ Describe 'cleanup-versions.ps1' {
     It 'mantem checkpoint na falha e tenta o arquivo novamente' {
         Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx'}, @{FSObjType=0;FileRef='/docs/b.docx'}) }
         Mock Get-PnPFileVersion { throw 'erro temporario' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*erro temporario*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*erro temporario*'
         $cp = Get-ChildItem $state -Filter 'checkpoint-*.json'
         $saved = Get-Content $cp.FullName -Raw | ConvertFrom-Json
         @($saved.CompletedFiles) | Should -Contain '/docs/a.docx'
@@ -406,7 +471,9 @@ Describe 'cleanup-versions.ps1' {
     It 'nao reutiliza checkpoint de simulacao na aplicacao' {
         Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx'}, @{FSObjType=0;FileRef='/docs/b.docx'}) }
         Mock Get-PnPFileVersion { throw 'falha simulada' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
         Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         $r.FilesProcessed | Should -Be 2
@@ -433,7 +500,10 @@ Describe 'cleanup-versions.ps1' {
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
         ) }
         Mock Get-PnPFileVersion { throw 'interrupted' } -ParameterFilter { $Url -eq '/docs/b.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*interrupted*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*interrupted*'
         Mock Get-PnPListItem { @(
             @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-02';UniqueId='a';_UIVersionString='6.0'},
             @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
@@ -473,13 +543,16 @@ Describe 'cleanup-versions.ps1' {
     It 'continua apos falha de exclusao e retoma pendente usando assinatura do inventario' {
         Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'}, @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}) }
         Mock Remove-PnPFileVersion { throw 'acesso negado' } -ParameterFilter { $Url -eq '/docs/a.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*parcial*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*parcial*'
         Assert-MockCalled Remove-PnPFileVersion 2 -Scope It -ParameterFilter { $Url -eq '/docs/b.docx' }
         $events = @(Get-Content (Join-Path $logs 'audit-*.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
         @($events | Where-Object Event -eq 'VersionDeleteFailed').Count | Should -Be 1
         ($events | Where-Object Event -eq 'VersionDeleteFailed').Error | Should -Be 'acesso negado'
         @($events | Where-Object Event -eq 'VersionDeleted').Count | Should -Be 2
-        ($events | Where-Object Event -eq 'RunCompleted').Outcome | Should -Be 'Failed'
+        ($events | Where-Object Event -eq 'RunCompleted').Outcome | Should -Be 'Partial'
         $cp = Get-Content (Get-ChildItem $state -Filter 'checkpoint-*.json').FullName -Raw | ConvertFrom-Json
         @($cp.CompletedFiles) | Should -Contain '/docs/b.docx'
         @($cp.CompletedFiles) | Should -Not -Contain '/docs/a.docx'
@@ -549,21 +622,24 @@ Describe 'cleanup-versions.ps1' {
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
         Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/fail.docx'},@{FSObjType=0;FileRef='/docs/a.docx'}) }
         Mock Remove-PnPFileVersion { throw '403 Forbidden' } -ParameterFilter { $Url -eq '/docs/fail.docx' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru } | Should -Throw '*parcial*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*parcial*'
         $r = Get-Content (Get-ChildItem $logs -Filter 'report-*.json').FullName -Raw | ConvertFrom-Json
-        $r.Status | Should -Be 'Failed'
+        $r.Status | Should -Be 'Partial'
         $r.LimitReached | Should -BeTrue
         $r.FilesFailed | Should -Be 1
         $r.Error | Should -Match '403'
     }
 
-    It 'CLI devolve codigo 3 apos salvar lote pausado sem emitir excecao' {
+    It 'CLI devolve codigo <Code> para <Mode> apos salvar relatorio sem emitir excecao' -ForEach @(@{Mode='Deferred';Code=3;Deleted=1},@{Mode='Partial';Code=2;Deleted=0}) {
         $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
         $cfg.Safety = @{MaxVersionsPerRun=1;MinimumVersionAgeDays=0}
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
         $wrapper = Join-Path $caseRoot 'invoke-fixture.ps1'
         @'
-param($CleanupPath,$ConfigurationPath)
+param($CleanupPath,$ConfigurationPath,$FixtureOutcome)
 function Import-Module {}
 function Start-Transcript {}
 function Stop-Transcript {}
@@ -572,17 +648,17 @@ function Get-PnPList { [pscustomobject]@{Id='docs';Title='Docs';BaseTemplate=101
 function Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx'} }
 function Get-PnPFile { [pscustomobject]@{CheckOutType='None'} }
 function Get-PnPProperty {}
-function Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } }
+function Get-PnPFileVersion { if ($FixtureOutcome -eq 'Partial') { throw 'falha persistente' }; 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } }
 function Remove-PnPFileVersion {}
 & $CleanupPath -ConfigPath $ConfigurationPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply
 exit $LASTEXITCODE
 '@ | Set-Content -LiteralPath $wrapper
-        $output = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $wrapper $cleanupScript $configPath 2>&1
-        $LASTEXITCODE | Should -Be 3
+        $output = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $wrapper $cleanupScript $configPath $Mode 2>&1
+        $LASTEXITCODE | Should -Be $Code
         ($output -join "`n") | Should -Not -Match 'SPVC-EXECUTION|Exception:'
         $r = Get-Content (Get-ChildItem $logs -Filter 'report-*.json').FullName -Raw | ConvertFrom-Json
-        $r.Status | Should -Be 'Deferred'
-        $r.VersionsDeleted | Should -Be 1
+        $r.Status | Should -Be $Mode
+        $r.VersionsDeleted | Should -Be $Deleted
     }
 
     It 'copia auditoria externa ao concluir' {
@@ -623,7 +699,10 @@ exit $LASTEXITCODE
         Mock Get-PnPFileVersion { @() }
         $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         Mock Get-PnPFileVersion { throw 'falha na conferencia' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*falha na conferencia*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*falha na conferencia*'
         $cp = Get-Content (Get-ChildItem $state -Filter 'checkpoint-*.json').FullName -Raw | ConvertFrom-Json
         @($cp.CompletedFiles) | Should -Not -Contain '/docs/a.docx'
         Mock Get-PnPFileVersion { @() }
@@ -661,7 +740,10 @@ exit $LASTEXITCODE
             [pscustomobject]@{Id='good';Title='Good';BaseTemplate=101;Hidden=$false;IsCatalog=$false}
         ) }
         Mock Get-PnPListItem { throw 'biblioteca indisponivel' } -ParameterFilter { $List -eq 'bad' }
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw '*biblioteca indisponivel*'
+        $partial = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $partial.Status | Should -Be 'Partial'
+        $partial.Success | Should -BeFalse
+        $partial.Error | Should -BeLike '*biblioteca indisponivel*'
         Assert-MockCalled Remove-PnPFileVersion 2 -Scope It
     }
 }

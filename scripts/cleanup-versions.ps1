@@ -95,8 +95,12 @@ function Invoke-PnPRequest {
     Invoke-CleanupActivity -Message $Activity -Action {
     Invoke-WithRetry -Operation $Operation -Settings $config.Retry -OnRetry {
         param($retry)
-        Write-AuditEvent -Event 'RequestRetry' -Outcome 'Retrying' -ErrorMessage $retry.Error -Details $retry
+        Write-AuditEvent -Event 'RequestRetry' -Outcome 'Retrying' -ErrorMessage $retry.Error -Reason $Activity -Details $retry
         Write-Warning "Falha temporaria; nova tentativa $($retry.Attempt) em $($retry.DelaySeconds) segundos."
+    } -OnRecovered {
+        param($recovery)
+        Write-AuditEvent -Event 'RequestRecovered' -Outcome 'Success' -Reason $Activity -Details $recovery
+        Write-Host "Solicitacao recuperada apos $($recovery.Retries) repeticao(oes); processamento continua normalmente."
     }
     }
 }
@@ -422,9 +426,13 @@ try {
     }
 
     if ($report.Errors.Count) {
-        throw "Execucao parcial; itens com falha serao tentados novamente. $($report.Errors -join '; ')"
-    }
-    if ($report.LimitReached) {
+        Save-Checkpoint ''
+        $report.Status = 'Partial'
+        $report.Error = "Execucao parcial; itens com falha serao tentados novamente. $($report.Errors -join '; ')"
+        $report.Diagnostic = '[SPVC-PARTIAL] Processamento terminou com pendencias. Relatorio e progresso preservados; reavalie os itens com falha na proxima execucao.'
+        $report.Warnings.Add($report.Diagnostic)
+        Write-Warning $report.Diagnostic
+    } elseif ($report.LimitReached) {
         # A bounded batch is not a failed operation. Keep the partial file out of
         # the completed set/inventory so the next invocation rechecks its versions.
         Save-Checkpoint ''
@@ -449,7 +457,7 @@ try {
 
     $reportPath = Join-Path $config.Paths.Logs "report-$siteKey-$runId.json"
     try {
-    Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } elseif ($report.Status -eq 'Deferred') { 'Deferred' } else { 'Failed' }) -ErrorMessage $report.Error `
+    Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } elseif ($report.Status -in 'Deferred','Partial') { $report.Status } else { 'Failed' }) -ErrorMessage $report.Error `
         -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesResumed = $report.FilesResumed; FilesSkipped = $report.FilesSkipped
             VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted; Status = $report.Status; LimitReached = $report.LimitReached }
     if ($config.Audit.CopyDirectory) {
@@ -475,13 +483,14 @@ try {
     } catch {
         # A second disk/audit failure must not replace the actual cleanup error.
         $finalizationError = "[SPVC-REPORT] Falha ao finalizar auditoria/relatorio '$reportPath': $($_.Exception.Message)"
-        if ($report.Error) { Write-Warning $finalizationError }
+        if ($report.Status -eq 'Failed' -and $report.Error) { Write-Warning $finalizationError }
         else { throw $finalizationError }
     } finally { if ($lock) { $lock.Dispose() } }
 }
 
 if (-not $Apply) {
-    Write-Warning 'Simulacao concluida. Nenhuma versao foi removida. Use -Apply para efetivar.'
+    if ($report.Status -eq 'Partial') { Write-Warning 'Simulacao parcial. Nenhuma versao foi removida; consulte as pendencias no relatorio.' }
+    else { Write-Warning 'Simulacao concluida. Nenhuma versao foi removida. Use -Apply para efetivar.' }
 }
 if ($PassThru) { [pscustomobject]$report }
 else {
@@ -493,4 +502,5 @@ else {
     # Nonzero keeps Task Scheduler's bounded retries. Callers using PassThru,
     # including the wizard, receive the structured result instead of an exception.
     if ($report.Status -eq 'Deferred') { exit 3 }
+    if ($report.Status -eq 'Partial') { exit 2 }
 }

@@ -36,6 +36,10 @@ Write-Host "Versoes elegiveis: $($report.VersionsEligible); removidas: $($report
 Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $report.BytesEligible), (Format-CleanupSize $report.BytesFreed))
 Write-Host "Ignorados: $($report.FilesSkipped)"
 Write-Host "Relatorio: $($report.ReportPath)"
+if ($report.Status -eq 'Partial') {
+    Write-Warning "Piloto parcial, com pendencias preservadas. Consulte o relatorio antes de tentar novamente: $($report.Error)"
+    exit 2
+}
 if ($report.Status -eq 'Deferred') {
     Write-Warning 'Lote pausado pelo limite, sem falha de limpeza. Ainda ha pendencias; a proxima execucao aplicada retomara o mesmo escopo com novo limite por execucao.'
 }

@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.8',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.9',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -890,6 +890,10 @@ function Invoke-SetupValidation {
                     param($ScriptPath, $Parameters)
                     & $ScriptPath @Parameters
                 }
+                Show-CleanupSummary $report
+                if ($report.PSObject.Properties['Status'] -and $report.Status -eq 'Partial') {
+                    if (Read-YesNo 'Simulacao parcial. Tentar os pendentes novamente agora? N conclui a instalacao com agendamento em simulacao' -Default $false) { continue }
+                }
                 break
             } catch {
                 Write-Host "Nao foi possivel concluir: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -901,9 +905,12 @@ function Invoke-SetupValidation {
                 if (-not (Read-YesNo 'Apos corrigir, deseja tentar novamente?')) { throw }
             }
         }
-        Show-CleanupSummary $report
+        if ($report.PSObject.Properties['Status'] -and $report.Status -eq 'Partial') {
+            Write-Host 'Instalacao continuara com agendamento em simulacao. Pendencias e motivos estao no relatorio; producao exige validacao e aprovacao posteriores.' -ForegroundColor Yellow
+            continue
+        }
         Write-Step '4 de 5 - Aprovar o piloto'
-        if ($report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
+        if ($report.Success -and $report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
             (Read-YesNo 'Aprova excluir as versoes antigas neste escopo para validar o piloto? A exclusao e permanente')) {
             $cleanupArguments.Apply = $true
             $applied = Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($installedCleanup, $cleanupArguments) -Action {
@@ -933,6 +940,10 @@ function Show-CleanupSummary {
     Write-Host "Versoes elegiveis: $($Report.VersionsEligible); excluidas: $($Report.VersionsDeleted)"
     Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $Report.BytesEligible), (Format-CleanupSize $Report.BytesFreed))
     Write-Host "Relatorio: $($Report.ReportPath)"
+    if ($Report.PSObject.Properties['Status'] -and $Report.Status -eq 'Partial') {
+        Write-Host 'RESULTADO PARCIAL: existem itens pendentes. A instalacao pode continuar; a producao nao sera habilitada por este resultado.' -ForegroundColor Yellow
+        Write-Warning $Report.Error
+    }
     if ($Report.PSObject.Properties['Status'] -and $Report.Status -eq 'Deferred') {
         Write-Host 'Lote pausado pelo limite de exclusoes. O escopo ainda tem pendencias; os contadores nao representam uma varredura completa.' -ForegroundColor Yellow
         Write-Host 'A proxima execucao aplicada retomara as pendencias, respeitando novamente o limite. A aprovacao abaixo autoriza o agendamento incremental.'

@@ -133,3 +133,11 @@ Ao alterar a quantidade de versões mantidas ou a idade mínima, o checkpoint an
 O retry automatico repete a chamada que falhou. Se a execucao falhar e voce confirmar `Apos corrigir, deseja tentar novamente?`, o wizard inicia outra tentativa e reutiliza as analises completas e ainda validas da simulacao interrompida. A mesma retomada funciona repetindo a CLI no mesmo escopo e com o mesmo diretorio de estado. Nao use CleanInstall nem remova state para retomar.
 
 A enumeracao e a conferencia de metadados comecam novamente; o indice pode voltar a 1. Procure `Analise anterior reaproveitada` e o contador `FilesResumed`. Os totais incluem esses resultados uma unica vez. Arquivos alterados, falhas, ausencia de assinatura, politica diferente, resultado com mais de 24 horas ou idade minima vencida exigem nova consulta de historico. Resultados salvos antes da v1.4.8 nao permitem a retomada detalhada. Ao concluir a simulacao, o checkpoint e removido.
+
+## v1.4.9: timeout recuperado e instalacao com resultado parcial
+
+Um timeout que se recupera nas tentativas seguintes nao e uma falha final: o relatorio pode concluir com SUCESSO, sem erro no arquivo. Confira RequestRetry e RequestRecovered na auditoria. Mensagens TerminatingError repetidas no transcript, isoladamente, nao comprovam varias chamadas; podem ser a propagacao da mesma excecao.
+
+O erro `configured HttpClient.Timeout of 100 seconds elapsing` agora e reconhecido mesmo quando o PnP perde o tipo original da excecao ao produzir um erro PowerShell. A politica configurada controla quantas vezes repetir e a espera entre chamadas; nao altera o timeout HTTP por chamada.
+
+Se as tentativas se esgotarem em um arquivo, a varredura segue nos demais e retorna Status=Partial com relatorio e checkpoint. No wizard, responder N a `Simulacao parcial. Tentar os pendentes novamente agora?` conclui a instalacao com agendamento em simulacao. Responder S retoma imediatamente usando as analises validas. A producao nao e promovida por um resultado parcial. A CLI retorna 2 para parcial, 3 para lote pausado pelo limite e 0 para conclusao normal. Falhas que impedem conectar inicialmente ou gravar estado/relatorio continuam bloqueando a instalacao.

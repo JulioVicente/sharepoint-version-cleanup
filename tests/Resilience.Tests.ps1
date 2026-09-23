@@ -58,6 +58,11 @@ Describe 'Tentativas limitadas' {
         $cfg.Retry.MaxRetries = 3
         (Read-CleanupConfiguration -Values $cfg).Retry.MaxRetries | Should -Be 3
     }
+    It 'nao repete HTTP 403 mesmo com texto de timeout' {
+        $denied = [Net.Http.HttpRequestException]::new('configured HttpClient.Timeout of 100 seconds elapsing', $null, [Net.HttpStatusCode]::Forbidden)
+        { Invoke-WithRetry -Settings $settings -Operation { throw $denied } } | Should -Throw
+        Should -Invoke Start-Sleep -Times 0
+    }
     It 'respeita Retry-After maior que teto calculado' {
         $response = [Net.Http.HttpResponseMessage]::new([Net.HttpStatusCode]::TooManyRequests)
         $response.Headers.RetryAfter = [Net.Http.Headers.RetryConditionHeaderValue]::new([TimeSpan]::FromSeconds(12))

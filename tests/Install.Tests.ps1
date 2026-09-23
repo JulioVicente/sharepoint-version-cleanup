@@ -68,6 +68,24 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         Should -Invoke Read-YesNo -Times 1 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }
         @(Get-Content $callLog).Count | Should -Be 2
     }
+    It 'resultado parcial permite seguir em simulacao ou repetir agora: <RetryNow>' -ForEach @(@{RetryNow=$false},@{RetryNow=$true}) {
+        $fixturePath = Join-Path $scriptDirectory 'cleanup-versions.ps1'
+        $fixture = Get-Content $fixturePath -Raw
+        $fixture = $fixture.Replace('[pscustomobject]@{', '$partialRun = @(Get-Content (Join-Path $PSScriptRoot ''calls.jsonl'')).Count -eq 1' + "`n" + '[pscustomobject]@{')
+        $fixture = $fixture.Replace('Success=$true;', 'Status=$(if ($partialRun) {''Partial''} else {''Completed''}); Error=$(if ($partialRun) {''biblioteca indisponivel''} else {$null}); Success=(-not $partialRun);')
+        Set-Content -LiteralPath $fixturePath -Value $fixture
+        Mock Read-YesNo {
+            param($Prompt)
+            if ($Prompt -eq 'Executar a simulacao agora?') { return $true }
+            if ($Prompt -like 'Simulacao parcial*') { return $RetryNow }
+            return $false
+        }
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $approved.Count | Should -Be 0
+        @(Get-Content $callLog).Count | Should -Be (1 + [int]$RetryNow)
+        Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }
+        Should -Invoke Read-YesNo -Times ([int]$RetryNow) -Exactly -ParameterFilter { $Prompt -like 'Aprova excluir*' }
+    }
 }
 Describe 'Installer' {
     It 'WhatIf nao escreve nem pergunta nem instala' {

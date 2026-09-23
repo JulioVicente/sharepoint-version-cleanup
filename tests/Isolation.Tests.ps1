@@ -15,6 +15,24 @@ Describe 'Isolamento real de processos do instalador' {
         $report.Apply | Should -BeFalse
         $report.Warnings | Should -Be @('aviso')
     }
+    It 'timeout encapsulado recuperado no filho nao vira falha de Receive-Job' {
+        $retryPath = Join-Path $PSScriptRoot '../scripts/Resilience.ps1'
+        $report = Invoke-CleanupIsolated -ArgumentList @($retryPath) -Action {
+            param($RetryScript)
+            . $RetryScript
+            function Start-Sleep {}
+            $counter = @{Attempts=0}
+            $result = Invoke-WithRetry -Settings @{MaxRetries=5;BaseDelaySeconds=2;MaxDelaySeconds=60} -Operation {
+                $counter.Attempts++
+                if ($counter.Attempts -eq 1) { Write-Error 'The request was canceled due to the configured HttpClient.Timeout of 100 seconds elapsing.' -ErrorAction Stop }
+                'recuperado'
+            }
+            [pscustomobject]@{Success=$true;Result=$result;Attempts=$counter.Attempts}
+        }
+        $report.Success | Should -BeTrue
+        $report.Result | Should -Be 'recuperado'
+        $report.Attempts | Should -Be 2
+    }
     It 'propaga falha do processo filho e remove o job mesmo em erro' {
         $before = @(Get-Job).Count
         { Invoke-CleanupIsolated -Action { throw 'AADSTS700027: teste' } } | Should -Throw '*AADSTS700027*'
