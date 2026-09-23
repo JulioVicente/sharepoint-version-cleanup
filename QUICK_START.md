@@ -22,6 +22,20 @@ Get-Content $bootstrap
 
 `-WhatIf` descreve a instalação sem baixar componentes, instalar pacotes, solicitar credenciais ou criar tarefas. Em um clone do projeto, execute `& .\bootstrap.ps1` para usar os arquivos locais.
 
+## Desinstalar ou começar novamente
+
+No PowerShell como Administrador:
+
+```powershell
+# Desinstalar, preservando auditoria e backup da configuracao/estado:
+& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1).Content)) -Uninstall
+
+# Limpar e iniciar um novo wizard:
+& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1).Content)) -CleanInstall
+```
+
+Adicione `-InstallPath 'C:\SPCleanup'` se usou outra pasta. `-WhatIf` simula o lançador; `-Force` dispensa apenas a confirmação da desinstalação. Aguarde execuções terminarem. Logs, certificados e recursos Entra são preservados. Veja [backup, limites e recuperação](INSTALL_DETAILS.md#desinstalação-e-instalação-limpa).
+
 ## Responder ao wizard
 
 Tenha a URL do site; o tenant será identificado automaticamente, com pergunta manual somente se a consulta falhar. Para uma biblioteca em `https://empresa.sharepoint.com/teste03/Forms/AllItems.aspx`, informe:

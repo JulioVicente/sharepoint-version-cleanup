@@ -6,7 +6,7 @@
 
 PnP.PowerShell 3.x e Microsoft.Graph.Authentication 2.x compatíveis já presentes em AllUsers são reutilizados. Quando ausentes, são instaladas as versões 3.0.0 e 2.25.0, respectivamente. A importação usa o manifesto compartilhado. O requisito PowerShell 7.4.6 segue a [publicação oficial do PnP 3](https://pnp.github.io/blog/pnp-powershell/pnp-powershell-v3-0-0/).
 
-O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.2 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
+O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.4 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
 Os scripts de operação exigem PowerShell 7.4.6+ e PnP.PowerShell 3.x. O diagnóstico de pré-requisitos também pode ser executado em Windows PowerShell 5.1. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
@@ -20,6 +20,9 @@ Os scripts de operação exigem PowerShell 7.4.6+ e PnP.PowerShell 3.x. O diagn�
 | `AdminClientId` | Opcional: Client ID próprio para o login do Graph. O padrão usa Microsoft Graph PowerShell e não pede esse ID. |
 | `SkipEmailTest` | Pula o envio Graph de teste; não valida entrega de emails. |
 | `WhatIf` | Sem efeitos colaterais: não instala, baixa, escreve, registra ou agenda. |
+| `Uninstall` | Somente no bootstrap/lançador versionado: remove tarefas desta instalação e arquiva componentes, configuração e estado padrão. Não inicia o wizard. |
+| `CleanInstall` | Somente no bootstrap/lançador versionado: desinstala e, se concluir, inicia o wizard sem configuração anterior. Não combine com `Uninstall`. |
+| `Force` | Nos modos de limpeza: dispensa a confirmação da desinstalação. Não ignora validações, locks nem as aprovações de piloto/produção do novo wizard. |
 
 O instalador copia scripts, template, exemplo JSON e documentação operacional. `Install.ps1` é o assistente principal; `bootstrap.ps1` é o lançador. Não existem mais dois arquivos diferenciados somente por maiúsculas/minúsculas.
 
@@ -39,13 +42,43 @@ Registro Entra, certificado exportado, módulo instalado e exclusões de versõe
 
 As permissões Microsoft 365 dependem do administrador: o assistente não pode conceder privilégios que a conta autenticada não possui. A leitura bem-sucedida não comprova permissão para excluir; o piloto aplicado é a validação dessa etapa.
 
-## Desinstalação
+## Desinstalação e instalação limpa
 
-No Agendador, desabilite e remova apenas as tarefas desta instalação. Preserve relatórios exigidos pela operação e remova os arquivos locais quando não forem necessários. Aplicativos Entra, concessões e certificados exigem remoção administrativa separada, depois de confirmar que não têm outros consumidores. Nunca use o procedimento de desinstalação para apagar arquivos ou versões no SharePoint.
+No PowerShell **como Administrador**, uma linha para desinstalar a pasta padrão:
+
+```powershell
+& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1).Content)) -Uninstall
+```
+
+Para limpar a instalação anterior e abrir o wizard novamente:
+
+```powershell
+& ([scriptblock]::Create((iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1).Content)) -CleanInstall
+```
+
+Também é possível baixar o lançador versionado e executá-lo com parâmetros:
+
+```powershell
+.\sharepoint-version-cleanup-v1.4.4.ps1 -Uninstall -WhatIf
+.\sharepoint-version-cleanup-v1.4.4.ps1 -Uninstall
+.\sharepoint-version-cleanup-v1.4.4.ps1 -CleanInstall -InstallPath 'C:\SPCleanup'
+```
+
+`-WhatIf` no bootstrap apenas descreve o modo, sem baixar ou executar componentes. Para inspecionar localmente as tarefas e os componentes identificados em uma instalação da v1.4.4+, use PowerShell 7: `& "$env:ProgramData\SharePointVersionCleanup\scripts\Uninstall.ps1" -WhatIf`. O script local aceita `-InstallPath` para outro destino. O desinstalador não importa Graph/PnP nem exige login no Microsoft 365; o bootstrap precisa de PowerShell 7.4.6+ para executá-lo.
+
+Antes de confirmar, o desinstalador mostra o destino, as tarefas identificadas e o backup. Arquiva somente componentes conhecidos, `config/config.json`, sugestões do wizard e a pasta padrão `state`. O backup fica ao lado da instalação, com nome `SharePointVersionCleanup-uninstalled-<data>-<id>`, protegido para administradores e SYSTEM. Contém `uninstall-summary.json`, com arquivos arquivados, tarefas removidas e resultado, além dos XMLs das tarefas. Nenhuma exclusão de versões é executada nessa operação.
+
+Permanecem no local: logs, relatórios, auditoria, backups de certificados, caminhos personalizados e arquivos desconhecidos. PowerShell, módulos compartilhados, certificados dos repositórios Windows, aplicativo Entra e concessões também são preservados. Não há opção que apague esses recursos automaticamente. A pasta de instalação pode continuar existindo com esses dados; isso é esperado.
+
+Encerre execuções manuais e aguarde tarefas terminarem antes de limpar. O desinstalador recusa tarefas ativas, locks inacessíveis/em uso, recuperação de instalação pendente, repositórios Git, pastas não reconhecidas, raiz do disco, diretórios de sistema e redirecionamentos. Só remove tarefas com o prefixo do produto e o caminho exato do JSON dessa instalação. Tarefas de outra pasta permanecem intactas. Caminhos personalizados de estado/auditoria não são percorridos nem removidos; encerre também qualquer execução que os utilize.
+
+Em falha parcial, os arquivos já arquivados permanecem no backup e tarefas já desabilitadas não são reativadas automaticamente. Consulte `uninstall-summary.json` e a mensagem original, preserve o backup e corrija a causa antes de prosseguir. A instalação limpa não inicia se houver falha ou cancelamento. Para recuperar a configuração anterior, reinstale os componentes e revise/restaure o JSON e estado do backup; não reative tarefas de exclusão sem conferir o escopo. Tarefas legadas baseadas em senha podem exigir informar a senha novamente para restaurar o agendamento.
+
+`-CleanInstall` reinicia o incremental e solicita configuração, simulação e aprovações novamente. Certificados/aplicativo existentes ainda podem ser reutilizados. Uma limpeza local não revoga nem reapresenta consentimentos do Entra. Para reparar apenas Graph/PnP, normalmente basta repetir a instalação comum, que preserva a configuração.
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.4.2` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`.
+O bootstrap instala componentes da tag `v1.4.4` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`. Os modos de limpeza exigem uma revisão que inclua `scripts/Uninstall.ps1`.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 

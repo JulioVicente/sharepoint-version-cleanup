@@ -3,7 +3,10 @@
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
     [string]$RepositoryRawUrl,
-    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.4.3',
+    [ValidatePattern('^[a-zA-Z0-9._-]+$')][string]$ReleaseVersion = 'v1.4.4',
+    [switch]$Uninstall,
+    [switch]$CleanInstall,
+    [switch]$Force,
     [switch]$SkipAppRegistration,
     [switch]$SkipEmailTest,
     [string]$AdminClientId
@@ -63,11 +66,56 @@ function Install-CleanupPowerShell {
     } finally { if (Test-Path -LiteralPath $msi) { Remove-Item -LiteralPath $msi -Force -ErrorAction SilentlyContinue } }
 }
 
+function Get-CleanupLauncherComponent {
+    param([string]$RelativePath, [string]$RepositoryRawUrl, [string]$LocalRoot, [Collections.Generic.List[string]]$Downloads)
+    $localFile = if ($LocalRoot) { Join-Path $LocalRoot $RelativePath } else { $null }
+    if ($localFile -and (Test-Path -LiteralPath $localFile -PathType Leaf)) { return $localFile }
+    $temporaryFile = Join-Path ([IO.Path]::GetTempPath()) ('spvc-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    $Downloads.Add($temporaryFile)
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $manifest = Invoke-RestMethod -Uri "$($RepositoryRawUrl.TrimEnd('/'))/release-manifest.json" -TimeoutSec 60
+    Invoke-WebRequest -UseBasicParsing -Uri "$($RepositoryRawUrl.TrimEnd('/'))/$RelativePath" -OutFile $temporaryFile -TimeoutSec 60
+    $expectedHash = $manifest.Files.$RelativePath
+    if (-not $expectedHash -or (Get-FileHash -LiteralPath $temporaryFile -Algorithm SHA256).Hash -ne $expectedHash) {
+        throw "Hash SHA256 divergente: $RelativePath. Nenhum componente foi executado."
+    }
+    return $temporaryFile
+}
+
+function Invoke-CleanupLauncher {
+    param([string]$PowerShellPath, [string]$InstallPath, [string]$RepositoryRawUrl, [string]$LocalRoot,
+        [switch]$Uninstall, [switch]$CleanInstall, [switch]$Force,
+        [switch]$SkipAppRegistration, [switch]$SkipEmailTest, [string]$AdminClientId)
+    $downloads = [Collections.Generic.List[string]]::new()
+    try {
+        if ($Uninstall -or $CleanInstall) {
+            $remover = Get-CleanupLauncherComponent -RelativePath 'scripts/Uninstall.ps1' -RepositoryRawUrl $RepositoryRawUrl -LocalRoot $LocalRoot -Downloads $downloads
+            $removeArguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$remover,'-InstallPath',$InstallPath)
+            if ($Force) { $removeArguments += '-Force' }
+            & $PowerShellPath @removeArguments
+            if ($LASTEXITCODE -ne 0) { throw "A desinstalacao nao foi concluida (codigo $LASTEXITCODE). Nenhuma nova instalacao foi iniciada." }
+            if ($Uninstall) { return }
+        }
+        $installer = Get-CleanupLauncherComponent -RelativePath 'Install.ps1' -RepositoryRawUrl $RepositoryRawUrl -LocalRoot $LocalRoot -Downloads $downloads
+        $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-InstallPath',$InstallPath,'-RepositoryRawUrl',$RepositoryRawUrl)
+        if ($SkipAppRegistration) { $arguments += '-SkipAppRegistration' }
+        if ($SkipEmailTest) { $arguments += '-SkipEmailTest' }
+        if ($AdminClientId) { $arguments += @('-AdminClientId',$AdminClientId) }
+        & $PowerShellPath @arguments
+        if ($LASTEXITCODE -ne 0) { throw "O assistente terminou com erro (codigo $LASTEXITCODE). Veja a mensagem acima." }
+    } finally {
+        foreach ($download in $downloads) { if (Test-Path -LiteralPath $download) { Remove-Item -LiteralPath $download -Force -ErrorAction SilentlyContinue } }
+    }
+}
+
+if ($Uninstall -and $CleanInstall) { throw 'Escolha somente -Uninstall ou -CleanInstall.' }
+if ($Force -and -not ($Uninstall -or $CleanInstall)) { throw '-Force so se aplica a -Uninstall ou -CleanInstall.' }
 if (-not $RepositoryRawUrl) { $RepositoryRawUrl = "https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/$ReleaseVersion" }
 # When invoked through `iwr ... | iex`, PowerShell does not create a
 # PSCmdlet object for this script block. Keep WhatIf support for file execution
 # while allowing the one-line launcher to run normally.
-if ($PSCmdlet -and -not $PSCmdlet.ShouldProcess($InstallPath, 'Preparar PowerShell, baixar e iniciar o assistente')) { return }
+$operation = if ($Uninstall) { 'Desinstalar preservando backup, logs e certificados' } elseif ($CleanInstall) { 'Arquivar instalacao anterior e iniciar novo assistente' } else { 'Preparar PowerShell, baixar e iniciar o assistente' }
+if ($PSCmdlet -and -not $PSCmdlet.ShouldProcess($InstallPath, $operation)) { return }
 if ($env:OS -ne 'Windows_NT') { throw 'Este instalador requer Windows.' }
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
@@ -79,26 +127,5 @@ if (-not $pwshPath) {
     Write-Host 'Preparando PowerShell 7.4.6+ para executar o assistente.'
     $pwshPath = Install-CleanupPowerShell
 }
-$installer = if ($PSScriptRoot) { Join-Path $PSScriptRoot 'Install.ps1' } else { $null }
-$downloaded = $false
-try {
-    if (-not $installer -or -not (Test-Path -LiteralPath $installer)) {
-        $installer = Join-Path ([IO.Path]::GetTempPath()) ('spvc-' + [guid]::NewGuid().ToString('N') + '.ps1')
-        $downloaded = $true
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        $manifest = Invoke-RestMethod -Uri "$($RepositoryRawUrl.TrimEnd('/'))/release-manifest.json" -TimeoutSec 60
-        Invoke-WebRequest -UseBasicParsing -Uri "$($RepositoryRawUrl.TrimEnd('/'))/Install.ps1" -OutFile $installer -TimeoutSec 60
-        $expectedHash = $manifest.Files.'Install.ps1'
-        if (-not $expectedHash -or (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $expectedHash) {
-            throw 'Hash SHA256 do instalador divergente. Nenhum instalador foi executado.'
-        }
-    }
-    $arguments = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',$installer,'-InstallPath',$InstallPath,'-RepositoryRawUrl',$RepositoryRawUrl)
-    if ($SkipAppRegistration) { $arguments += '-SkipAppRegistration' }
-    if ($SkipEmailTest) { $arguments += '-SkipEmailTest' }
-    if ($AdminClientId) { $arguments += @('-AdminClientId',$AdminClientId) }
-    & $pwshPath @arguments
-    if ($LASTEXITCODE -ne 0) { throw "O assistente terminou com erro (codigo $LASTEXITCODE). Veja a mensagem acima." }
-} finally {
-    if ($downloaded) { Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue }
-}
+Invoke-CleanupLauncher -PowerShellPath $pwshPath -InstallPath $InstallPath -RepositoryRawUrl $RepositoryRawUrl -LocalRoot $PSScriptRoot `
+    -Uninstall:$Uninstall -CleanInstall:$CleanInstall -Force:$Force -SkipAppRegistration:$SkipAppRegistration -SkipEmailTest:$SkipEmailTest -AdminClientId $AdminClientId
