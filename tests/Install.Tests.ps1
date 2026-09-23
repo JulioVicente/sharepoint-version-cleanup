@@ -20,7 +20,7 @@ Describe 'Parametros da simulacao e do piloto no wizard' {
 param([string]$ConfigPath,[string]$SiteUrl,[string]$FolderServerRelativeUrl,[switch]$PassThru,[switch]$Apply)
 $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScriptRoot 'calls.jsonl')
 [pscustomobject]@{
-    Success=$true; VersionsEligible=1; VersionsDeleted=[int][bool]$Apply; FilesSkipped=0
+    Success=$true; Apply=[bool]$Apply; VersionsEligible=1; VersionsDeleted=[int][bool]$Apply; FilesSkipped=0
     FilesProcessed=1; FilesUnchanged=0; BytesEligible=1; BytesFreed=[int][bool]$Apply
     ReportPath='test-report.json'; Warnings=@()
 }
@@ -54,6 +54,19 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $calls[0].ContainsKey('FolderServerRelativeUrl') | Should -BeFalse
         $calls[0].ContainsKey('Apply') | Should -BeFalse
         $approved.Count | Should -Be 0
+    }
+    It 'piloto limitado retorna pelo processo isolado e solicita aprovacao antes de agendar' -ForEach @(@{Approve=$true},@{Approve=$false}) {
+        $fixturePath = Join-Path $scriptDirectory 'cleanup-versions.ps1'
+        Add-Content -LiteralPath $fixturePath -Value ''
+        $fixture = Get-Content -LiteralPath $fixturePath -Raw
+        $fixture = $fixture.Replace('Success=$true;', "Status=`$(if (`$Apply) { 'Deferred' } else { 'Completed' }); LimitReached=[bool]`$Apply; Success=(-not `$Apply);")
+        $fixture = $fixture.Replace('FilesProcessed=1;', 'FilesProcessed=0;')
+        Set-Content -LiteralPath $fixturePath -Value $fixture
+        Mock Read-YesNo { param($Prompt) if ($Prompt -like 'Piloto aprovado*') { return $Approve }; $true }
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $approved.Count | Should -Be ([int]$Approve)
+        Should -Invoke Read-YesNo -Times 1 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }
+        @(Get-Content $callLog).Count | Should -Be 2
     }
 }
 Describe 'Installer' {

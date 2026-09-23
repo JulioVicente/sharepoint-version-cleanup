@@ -2,6 +2,20 @@
 # Shared validation; dot-sourcing this file has no external effects.
 . (Join-Path $PSScriptRoot 'Progress.ps1')
 . (Join-Path $PSScriptRoot 'Diagnostics.ps1')
+function Test-CleanupPilotResult {
+    param([Parameter(Mandatory)]$Report)
+    $fields = @{}
+    if ($Report -is [Collections.IDictionary]) { $fields = $Report }
+    else { foreach ($property in $Report.PSObject.Properties) { $fields[$property.Name] = $property.Value } }
+    $completed = $fields['Success'] -eq $true -and $fields['FilesProcessed'] -gt 0 -and
+        (-not $fields['Status'] -or $fields['Status'] -eq 'Completed')
+    $deferred = $fields['Status'] -eq 'Deferred' -and $fields['LimitReached'] -eq $true
+    return ($completed -or $deferred) -and $fields['Apply'] -eq $true -and $fields['VersionsDeleted'] -gt 0 -and
+        $fields['FilesSkipped'] -eq 0 -and -not $fields['Error'] -and
+        @($fields['Errors'] | Where-Object { $_ }).Count -eq 0 -and
+        [int]$fields['FilesFailed'] -eq 0 -and [int]$fields['LibrariesFailed'] -eq 0 -and [int]$fields['SamplesFailed'] -eq 0
+}
+
 function ConvertTo-SiteUrl {
     param([Parameter(Mandatory)][string]$Value)
     $uri = $null

@@ -29,6 +29,7 @@ if ($OutputCsv) {
 [pscustomobject]@{
     Date = $Date.ToString('yyyy-MM-dd'); AuditFiles = $files.Count; Events = $events.Count
     RunsSucceeded = @($events | Where-Object { $_.Event -eq 'RunCompleted' -and $_.Outcome -eq 'Success' }).Count
+    RunsDeferred = @($events | Where-Object { $_.Event -eq 'RunCompleted' -and $_.Outcome -eq 'Deferred' }).Count
     RunsFailed = @($events | Where-Object { $_.Event -eq 'RunCompleted' -and $_.Outcome -eq 'Failed' }).Count
     DirectoriesScanned = @($events | Where-Object Event -eq 'DirectoryScanned' | Select-Object SiteUrl,FileUrl -Unique).Count
     VersionsSimulated = @($events | Where-Object Event -eq 'VersionWouldDelete').Count

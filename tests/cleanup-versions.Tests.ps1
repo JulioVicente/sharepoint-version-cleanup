@@ -51,6 +51,7 @@ Describe 'cleanup-versions.ps1' {
     }
 
     AfterEach {
+        Remove-Variable -Name SpvcFixtureDeletedIds -Scope Global -ErrorAction SilentlyContinue
         'Connect-PnPOnline','Get-PnPList','Get-PnPListItem','Get-PnPFile','Get-PnPProperty',
         'Get-PnPFileVersion','Remove-PnPFileVersion','Get-PnPFolder' | ForEach-Object {
             Remove-Item -Path "function:global:$_" -ErrorAction SilentlyContinue
@@ -358,13 +359,86 @@ Describe 'cleanup-versions.ps1' {
         $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
         $cfg.Safety = @{MaxVersionsPerRun=1;MinimumVersionAgeDays=0}
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
-        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply } | Should -Throw
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         Assert-MockCalled Remove-PnPFileVersion 1 -Scope It
-        $r = Get-Content (Get-ChildItem $logs -Filter 'report-*.json').FullName -Raw | ConvertFrom-Json
+        $saved = Get-Content $r.ReportPath -Raw | ConvertFrom-Json
+        $saved.Status | Should -Be 'Deferred'
+        $r.Status | Should -Be 'Deferred'
+        $r.Success | Should -BeFalse
+        $r.Error | Should -BeNullOrEmpty
         $r.LimitReached | Should -BeTrue
         $r.VersionsDeleted | Should -Be 1
         $events = Get-Content (Join-Path $logs 'audit-*.jsonl') | ForEach-Object { $_ | ConvertFrom-Json }
         @($events | Where-Object Event -eq 'FileCompleted').Count | Should -Be 0
+        ($events | Where-Object Event -eq 'RunCompleted').Outcome | Should -Be 'Deferred'
+        $checkpoint = Get-Content (Get-ChildItem $state -Filter 'checkpoint-*.json').FullName -Raw | ConvertFrom-Json
+        @($checkpoint.CompletedFiles).Count | Should -Be 0
+        $daily = & (Join-Path $PSScriptRoot '../scripts/Get-DailyAudit.ps1') -LogsPath $logs
+        $daily.RunsDeferred | Should -Be 1
+        $daily.RunsFailed | Should -Be 0
+    }
+
+    It 'retoma arquivo parcialmente limpo sem repetir exclusoes' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Safety = @{MaxVersionsPerRun=1;MinimumVersionAgeDays=0}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        $global:SpvcFixtureDeletedIds = [Collections.Generic.List[int]]::new()
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'} }
+        Mock Get-PnPFileVersion {
+            1..4 | Where-Object { $_ -notin $global:SpvcFixtureDeletedIds } | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} }
+        }
+        Mock Remove-PnPFileVersion { param($Identity) $global:SpvcFixtureDeletedIds.Add([int]$Identity) }
+        $first = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $first.Status | Should -Be 'Deferred'
+        $first.FilesProcessed | Should -Be 0
+        $second = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $second.Status | Should -Be 'Completed'
+        $second.Success | Should -BeTrue
+        $second.VersionsDeleted | Should -Be 1
+        @($global:SpvcFixtureDeletedIds) | Should -Be @(2,1)
+        @(Get-ChildItem $state -Filter 'checkpoint-*.json').Count | Should -Be 0
+    }
+
+    It 'nao mascara falha real quando tambem atinge limite' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Safety = @{MaxVersionsPerRun=1;MinimumVersionAgeDays=0}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/fail.docx'},@{FSObjType=0;FileRef='/docs/a.docx'}) }
+        Mock Remove-PnPFileVersion { throw '403 Forbidden' } -ParameterFilter { $Url -eq '/docs/fail.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru } | Should -Throw '*parcial*'
+        $r = Get-Content (Get-ChildItem $logs -Filter 'report-*.json').FullName -Raw | ConvertFrom-Json
+        $r.Status | Should -Be 'Failed'
+        $r.LimitReached | Should -BeTrue
+        $r.FilesFailed | Should -Be 1
+        $r.Error | Should -Match '403'
+    }
+
+    It 'CLI devolve codigo 3 apos salvar lote pausado sem emitir excecao' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.Safety = @{MaxVersionsPerRun=1;MinimumVersionAgeDays=0}
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        $wrapper = Join-Path $caseRoot 'invoke-fixture.ps1'
+        @'
+param($CleanupPath,$ConfigurationPath)
+function Import-Module {}
+function Start-Transcript {}
+function Stop-Transcript {}
+function Connect-PnPOnline { 'fixture' }
+function Get-PnPList { [pscustomobject]@{Id='docs';Title='Docs';BaseTemplate=101;Hidden=$false;IsCatalog=$false} }
+function Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx'} }
+function Get-PnPFile { [pscustomobject]@{CheckOutType='None'} }
+function Get-PnPProperty {}
+function Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } }
+function Remove-PnPFileVersion {}
+& $CleanupPath -ConfigPath $ConfigurationPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $wrapper
+        $output = & (Join-Path $PSHOME 'pwsh.exe') -NoProfile -File $wrapper $cleanupScript $configPath 2>&1
+        $LASTEXITCODE | Should -Be 3
+        ($output -join "`n") | Should -Not -Match 'SPVC-EXECUTION|Exception:'
+        $r = Get-Content (Get-ChildItem $logs -Filter 'report-*.json').FullName -Raw | ConvertFrom-Json
+        $r.Status | Should -Be 'Deferred'
+        $r.VersionsDeleted | Should -Be 1
     }
 
     It 'copia auditoria externa ao concluir' {

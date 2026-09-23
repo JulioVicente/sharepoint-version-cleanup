@@ -26,8 +26,9 @@ if ($Test) {
 
 $templatePath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath)) 'templates\email-template.html'
 $template = Get-Content -LiteralPath $templatePath -Raw
-$status = if ($report.Success) { 'SUCESSO' } else { 'ERRO' }
-$color = if ($report.Success) { '#16803c' } else { '#c62828' }
+$deferred = $report.PSObject.Properties['Status'] -and $report.Status -eq 'Deferred'
+$status = if ($deferred) { 'PAUSADO PELO LIMITE' } elseif ($report.Success) { 'SUCESSO' } else { 'ERRO' }
+$color = if ($deferred) { '#986000' } elseif ($report.Success) { '#16803c' } else { '#c62828' }
 $warningText = if (@($report.Warnings).Count) {
     [Net.WebUtility]::HtmlEncode((@($report.Warnings) -join "`n"))
 } else { 'Nenhum' }

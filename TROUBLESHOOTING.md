@@ -84,7 +84,9 @@ Não compartilhe PFX, senhas ou chaves privadas. Remova dados sensíveis dos log
 
 Nenhuma versão elegível: confira quantidade preservada e idade mínima (30 dias por padrão). Para um piloto controlado com versões novas, configure idade `0`.
 
-`LimitReached` verdadeiro: execute novamente para retomar com novo limite por execução. O Agendador pode reiniciar até três vezes a cada 15 minutos.
+`LimitReached` verdadeiro sem falhas de processamento: desde a v1.4.5, o relatório usa `Status=Deferred` e o wizard continua normalmente, mostrando o lote parcial antes de pedir aprovação para agendar. O limite não é aumentado nem desativado. A CLI sem `-PassThru` retorna código 3; o Agendador pode reiniciar até três vezes a cada 15 minutos e retomar também no próximo horário configurado.
+
+Se uma versão anterior interrompeu a instalação com `Limite de exclusoes atingido; progresso preservado para nova execucao`, execute o instalador atualizado **normalmente, na mesma pasta**, mantendo os logs e o estado. Não use `-CleanInstall` nem apague checkpoints para corrigir esse caso. Confira as sugestões de configuração, execute a simulação e aprove o novo piloto/agendamento. Exclusões já confirmadas não são desfeitas pelo rollback do instalador. A mensagem de que o Graph aceitou o email não é a causa dessa interrupção.
 
 Erro parcial: consulte `Errors`, `FilesFailed`, `LibrariesFailed` e eventos `VersionDeleteFailed`/`RequestRetry`. Erros permanentes exigem correção; throttling respeita `Retry-After`. Uma resposta perdida pode ocorrer depois de a exclusão remota ter sido feita: a retomada consulta novamente o histórico.
 

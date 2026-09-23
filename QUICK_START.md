@@ -53,6 +53,8 @@ O assistente oferece email pelo Graph, usando a conta autenticada como remetente
 
 As tarefas usam LOCAL SERVICE, sem senha pessoal e sem exigir sessao aberta. O instalador prepara o certificado em LocalMachine e testa o acesso sob essa identidade. O computador precisa permanecer ligado e conectado nos horarios previstos; execucoes perdidas iniciam quando possivel.
 
+Se o piloto atingir o limite de exclusões por execução, o wizard mostra o lote como pausado e mantém as pendências. Havendo exclusões sem falhas nem arquivos ignorados, permite aprovar o agendamento incremental mesmo que a varredura esteja incompleta. A retomada respeita novamente o limite. Não é necessário aumentar o teto ou fazer instalação limpa.
+
 ## Executar sem configuração JSON
 
 ```powershell

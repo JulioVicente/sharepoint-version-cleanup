@@ -41,4 +41,18 @@ Describe 'Production scope' {
         & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO'
         Should -Invoke Set-ScheduledTask -Times 1 -ParameterFilter { $TaskName -eq 'SharePoint Version Cleanup - 01' -and $Action.Arguments.EndsWith(' -Apply') }
     }
+    It 'aceita lote limitado sem falhas mas recusa erro real no mesmo lote' {
+        $reportPath = Join-Path $cfg.Paths.Logs 'report-pilot.json'
+        $report = Get-Content $reportPath -Raw | ConvertFrom-Json -AsHashtable
+        $report.Success = $false; $report.Status = 'Deferred'; $report.LimitReached = $true; $report.FilesProcessed = 0
+        $report | ConvertTo-Json | Set-Content $reportPath
+        $expectedArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $installation 'scripts\cleanup-versions.ps1')`" -ConfigPath `"$configPath`" -SiteUrl `"https://contoso.sharepoint.com`" -FolderServerRelativeUrl `"/teste03`""
+        Mock Get-ScheduledTask { [pscustomobject]@{TaskName='SharePoint Version Cleanup - 01';Actions=@([pscustomobject]@{Execute='pwsh.exe';Arguments=$expectedArgs})} }
+        & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO'
+        Should -Invoke Set-ScheduledTask -Times 1
+        $report.Errors = @('403 Forbidden')
+        $report | ConvertTo-Json | Set-Content $reportPath
+        { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*Nenhum piloto*'
+        Should -Invoke Set-ScheduledTask -Times 1
+    }
 }

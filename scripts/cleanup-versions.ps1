@@ -60,7 +60,7 @@ catch { throw "[SPVC-STORAGE] Nao foi possivel preparar logs '$($config.Paths.Lo
 $lock = $null
 $transcriptStarted = $false
 $report = [ordered]@{
-    Success = $false; SiteUrl = $SiteUrl; StartedAt = $startedAt; FinishedAt = $null
+    Success = $false; Status = 'Failed'; SiteUrl = $SiteUrl; StartedAt = $startedAt; FinishedAt = $null
     Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep; FilesProcessed = 0; VersionsDeleted = 0; BytesFreed = 0
     VersionsEligible = 0; BytesEligible = 0; NotificationError = $null
     FolderServerRelativeUrl = $scopeFolder
@@ -351,13 +351,24 @@ try {
         }
     }
 
-    if ($report.LimitReached) { throw 'Limite de exclusoes atingido; progresso preservado para nova execucao.' }
     if ($report.Errors.Count) {
         throw "Execucao parcial; itens com falha serao tentados novamente. $($report.Errors -join '; ')"
     }
-    $report.Success = $true
-    Remove-Item -LiteralPath $checkpointPath -Force -ErrorAction SilentlyContinue
+    if ($report.LimitReached) {
+        # A bounded batch is not a failed operation. Keep the partial file out of
+        # the completed set/inventory so the next invocation rechecks its versions.
+        Save-Checkpoint ''
+        $report.Status = 'Deferred'
+        $report.Diagnostic = '[SPVC-RUN-LIMIT] Limite por execucao atingido. Lote processado sem falhas; pendencias preservadas para nova execucao no mesmo escopo.'
+        $report.Warnings.Add($report.Diagnostic)
+        Write-Warning $report.Diagnostic
+    } else {
+        $report.Success = $true
+        $report.Status = 'Completed'
+        Remove-Item -LiteralPath $checkpointPath -Force -ErrorAction SilentlyContinue
+    }
 } catch {
+    $report.Status = 'Failed'
     $report.Error = $_.Exception.Message
     $report.Diagnostic = Get-CleanupFailureHint -Failure $_
     throw [InvalidOperationException]::new("$($report.Diagnostic) Erro original: $($report.Error) Relatorio: $($report.ReportPath); log: $logPath", $_.Exception)
@@ -368,9 +379,9 @@ try {
 
     $reportPath = Join-Path $config.Paths.Logs "report-$siteKey-$runId.json"
     try {
-    Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } else { 'Failed' }) -ErrorMessage $report.Error `
+    Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } elseif ($report.Status -eq 'Deferred') { 'Deferred' } else { 'Failed' }) -ErrorMessage $report.Error `
         -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesSkipped = $report.FilesSkipped
-            VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted }
+            VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted; Status = $report.Status; LimitReached = $report.LimitReached }
     if ($config.Audit.CopyDirectory) {
         try {
             New-Item -ItemType Directory -Path $config.Audit.CopyDirectory -Force | Out-Null
@@ -407,4 +418,7 @@ else {
     Write-Host "Arquivos: $($report.FilesProcessed); sem alteracao: $($report.FilesUnchanged); ignorados: $($report.FilesSkipped)"
     Write-Host "Versoes elegiveis: $($report.VersionsEligible); excluidas: $($report.VersionsDeleted)"
     Write-Host "Relatorio: $($report.ReportPath)"
+    # Nonzero keeps Task Scheduler's bounded retries. Callers using PassThru,
+    # including the wizard, receive the structured result instead of an exception.
+    if ($report.Status -eq 'Deferred') { exit 3 }
 }

@@ -193,7 +193,7 @@ As seções abaixo são opcionais; estes padrões se aplicam quando omitidas:
 
 | Campo | Tipo e valores | Comportamento |
 |---|---|---|
-| `Safety.MaxVersionsPerRun` | Inteiro 1–1000000; padrão 1000 | Máximo de exclusões confirmadas por execução de site. Havendo mais candidatas, registra `RunLimitReached`, mantém pendências e retorna erro para retomada. Não é limite diário. |
+| `Safety.MaxVersionsPerRun` | Inteiro 1–1000000; padrão 1000 | Máximo de exclusões confirmadas por execução de site. Havendo mais candidatas, registra `RunLimitReached` e pausa com `Status=Deferred`, preservando pendências. Não é limite diário. Na CLI/agendamento sem `-PassThru`, retorna código 3 para permitir nova tentativa. |
 | `Safety.MinimumVersionAgeDays` | Inteiro 0–36500; padrão 30 | Idade mínima das versões excedentes. `0` permite testar versões recém-criadas. Preserva sempre a versão atual e as N históricas mais recentes. |
 | `Retry.MaxRetries` | Inteiro 0–10; padrão 3 | Tentativas adicionais por chamada; zero desativa as tentativas do programa. O SDK pode ter tentativas próprias. |
 | `Retry.BaseDelaySeconds` | Inteiro 1–300; padrão 2 | Espera inicial, crescendo exponencialmente, com pequena variação aleatória. |
@@ -234,6 +234,12 @@ Cada linha contém `Timestamp`, `RunId`, `SiteUrl`, `FolderServerRelativeUrl`, `
 Crie previamente a pasta de destino do CSV. O comando consolida sucessos, falhas, diretórios e arquivos que tiveram versões excluídas. Simulação não é contada como exclusão.
 
 O relatório contém `Success`, `Error`, `Errors`, `FilesProcessed`, `FilesUnchanged`, `FilesSkipped`, `FilesFailed`, `LibrariesFailed`, `VersionsEligible`, `VersionsDeleted`, `BytesEligible`, `BytesFreed`, `LimitReached`, `AuditPaths`, `AuditBackupError` e `NotificationError`. Os bytes são estimativas, sem garantia de liberação imediata da quota. Sucesso da limpeza não significa entrega de email ou sucesso da cópia externa; consulte os campos correspondentes.
+
+Desde a v1.4.5, `Status` distingue `Completed` (processamento concluído, `Success=true`), `Deferred` (lote pausado exclusivamente pelo limite, `Success=false`, `LimitReached=true`, `Error=null`) e `Failed` (falha real). Em `Deferred`, a varredura está incompleta e os contadores não representam todo o escopo. `FilesProcessed` conta arquivos concluídos; um arquivo parcialmente limpo pode ter exclusões registradas sem entrar nesse contador nem no inventário de concluídos.
+
+Com `-PassThru`, o lote pausado retorna o relatório normalmente, sem lançar exceção. O wizard mostra o resultado e pode pedir aprovação do agendamento se houve exclusões e não houve falhas ou arquivos ignorados. Sem `-PassThru`, o processo retorna código 3 após salvar relatório/auditoria, permitindo os reinícios limitados do Agendador. Conclusão normal retorna 0; exceções continuam retornando erro. Não trate `Success=false` isoladamente como falha: examine `Status` e `Error`.
+
+O email identifica o lote como **PAUSADO PELO LIMITE**. A auditoria registra `RunCompleted` com `Outcome=Deferred`, e o resumo diário o contabiliza em `RunsDeferred`, separado de `RunsFailed`. Uma falha real ocorrida antes de atingir o limite mantém `Status=Failed` e não habilita aprovação do piloto como lote sem falhas.
 
 Falhas por arquivo ou biblioteca permitem continuar os demais. Qualquer falha operacional resulta em saída diferente de zero e conserva checkpoint; a retomada reavalia o histórico atual dos arquivos incompletos. Autenticação inválida, estado corrompido ou impossibilidade de gravar auditoria podem impedir continuidade. Uma interrupção abrupta pode deixar início sem evento de conclusão. Nenhum programa é imune a falhas.
 

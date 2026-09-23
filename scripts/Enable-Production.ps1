@@ -23,9 +23,8 @@ $pilot = Get-ChildItem -LiteralPath $config.Paths.Logs -Filter 'report-*.json' -
     Sort-Object LastWriteTimeUtc -Descending | ForEach-Object {
         try {
             $r = Get-Content -LiteralPath $_.FullName -Raw | ConvertFrom-Json -AsHashtable
-            if ($r.SiteUrl -eq $PilotSiteUrl -and $r.Success -eq $true -and $r.Apply -eq $true -and
-                $r.VersionsToKeep -eq $config.VersionsToKeep -and $r.PolicyKey -eq $policyKey -and $r.FilesProcessed -gt 0 -and
-                $r.VersionsDeleted -gt 0 -and $r.FilesSkipped -eq 0 -and
+            if ($r.SiteUrl -eq $PilotSiteUrl -and (Test-CleanupPilotResult $r) -and
+                $r.VersionsToKeep -eq $config.VersionsToKeep -and $r.PolicyKey -eq $policyKey -and
                 $r.FolderServerRelativeUrl -eq $PilotFolderServerRelativeUrl.TrimEnd('/') -and
                 ([datetime]$r.FinishedAt).ToUniversalTime() -ge $now.AddDays(-$MaximumPilotAgeDays) -and
                 ([datetime]$r.FinishedAt).ToUniversalTime() -le $now) { $r }

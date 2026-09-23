@@ -37,6 +37,25 @@ Describe 'Send-EmailReport.ps1' {
     }
 }
 
+Describe 'Email do lote pausado' {
+    It 'distingue pausa planejada de falha e conclusao do escopo' {
+        $configPath = Join-Path $TestDrive 'email-deferred.json'
+        @{Email=@{Enabled=$true}} | ConvertTo-Json | Set-Content $configPath
+        $reportPath = Join-Path $TestDrive 'deferred-report.json'
+        @{Success=$false;Status='Deferred';LimitReached=$true;SiteUrl='https://contoso.sharepoint.com';Apply=$true;
+          FilesProcessed=0;FilesUnchanged=0;FilesSkipped=0;FolderServerRelativeUrl='/docs';
+          VersionsEligible=2;VersionsDeleted=1;BytesEligible=20;BytesFreed=10;
+          Warnings=@('Pendencias preservadas para nova execucao.');Error=$null;LogPath='';FinishedAt=(Get-Date)} |
+            ConvertTo-Json | Set-Content $reportPath
+        $preview = Join-Path $TestDrive 'deferred.html'
+        & $emailScript -ConfigPath $configPath -ReportPath $reportPath -PreviewPath $preview
+        $html = Get-Content $preview -Raw
+        $html | Should -Match 'PAUSADO PELO LIMITE'
+        $html | Should -Match 'Pendencias preservadas'
+        $html | Should -Not -Match 'SPVC-EXECUTION|SUCESSO'
+    }
+}
+
 Describe 'Transporte Microsoft Graph' {
     BeforeAll {
         function Connect-PnPOnline { param($Url,$Tenant,$ClientId,$Thumbprint,[switch]$ReturnConnection) }

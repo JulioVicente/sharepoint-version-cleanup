@@ -33,6 +33,9 @@ Write-Host "Arquivos: $($report.FilesProcessed)"
 Write-Host "Versoes elegiveis: $($report.VersionsEligible); removidas: $($report.VersionsDeleted)"
 Write-Host "Ignorados: $($report.FilesSkipped)"
 Write-Host "Relatorio: $($report.ReportPath)"
+if ($report.Status -eq 'Deferred') {
+    Write-Warning 'Lote pausado pelo limite, sem falha de limpeza. Ainda ha pendencias; a proxima execucao aplicada retomara o mesmo escopo com novo limite por execucao.'
+}
 
 if (-not $Apply) {
     Write-Warning "Revise o relatorio e os logs. Para o piloto real, repita com -Apply -Confirmation 'APLICAR NO SITE PILOTO'."

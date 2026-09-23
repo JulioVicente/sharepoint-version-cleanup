@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.4',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.5',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -910,9 +910,11 @@ function Invoke-SetupValidation {
                 & $ScriptPath @Parameters
             }
             Show-CleanupSummary $applied
-            if ($applied.Success -and $applied.VersionsDeleted -gt 0 -and $applied.FilesSkipped -eq 0 -and
+            if ((Test-CleanupPilotResult $applied) -and
                 (Read-YesNo 'Piloto aprovado. Ativar execucoes incrementais agendadas neste escopo?')) {
                 $approved.Add($site)
+            } else {
+                Write-Host 'Este escopo sera agendado em simulacao; a producao nao foi aprovada.'
             }
         } else {
             Write-Host 'Este escopo sera agendado em simulacao. Sem exclusoes elegiveis, crie historico no piloto antes de promover.'
@@ -923,10 +925,14 @@ function Invoke-SetupValidation {
 
 function Show-CleanupSummary {
     param($Report)
-    Write-Host "Arquivos analisados: $($Report.FilesProcessed); sem alteracao: $($Report.FilesUnchanged); ignorados: $($Report.FilesSkipped)"
+    Write-Host "Arquivos concluidos: $($Report.FilesProcessed); sem alteracao: $($Report.FilesUnchanged); ignorados: $($Report.FilesSkipped)"
     Write-Host "Versoes elegiveis: $($Report.VersionsEligible); excluidas: $($Report.VersionsDeleted)"
     Write-Host ('Espaco estimado: {0:N2} MB; liberado: {1:N2} MB' -f ($Report.BytesEligible / 1MB), ($Report.BytesFreed / 1MB))
     Write-Host "Relatorio: $($Report.ReportPath)"
+    if ($Report.PSObject.Properties['Status'] -and $Report.Status -eq 'Deferred') {
+        Write-Host 'Lote pausado pelo limite de exclusoes. O escopo ainda tem pendencias; os contadores nao representam uma varredura completa.' -ForegroundColor Yellow
+        Write-Host 'A proxima execucao aplicada retomara as pendencias, respeitando novamente o limite. A aprovacao abaixo autoriza o agendamento incremental.'
+    }
     foreach ($warning in $Report.Warnings) { Write-Warning $warning }
 }
 function Install-ScheduledTasks {
