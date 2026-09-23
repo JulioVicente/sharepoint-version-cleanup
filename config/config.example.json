@@ -36,7 +36,7 @@
   },
   "Retry": {
     "MaxDelaySeconds": 60,
-    "MaxRetries": 3,
+    "MaxRetries": 5,
     "BaseDelaySeconds": 2
   },
   "Audit": {

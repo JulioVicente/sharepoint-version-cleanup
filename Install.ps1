@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.6',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.7',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -865,7 +865,7 @@ function New-Configuration {
         FolderScopes = $scopes; VersionsToKeep = $keep; Authentication = $auth; Email = $email
         Schedule = @{ Frequency = $frequency; Time = $time }
         Safety = @{ MinimumVersionAgeDays = $minimumAge; MaxVersionsPerRun = $maximumDeletes }
-        Retry = @{ MaxRetries = 3; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
+        Retry = @{ MaxRetries = 5; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
         Audit = @{ CopyDirectory = $auditCopy }; Sampling = $sampling
         Paths = @{ State = (Join-Path $Destination 'state'); Logs = (Join-Path $Destination 'logs') }
     }

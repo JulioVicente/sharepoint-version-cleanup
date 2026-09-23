@@ -186,7 +186,7 @@ As seções abaixo são opcionais; estes padrões se aplicam quando omitidas:
 ```json
 {
   "Safety": { "MaxVersionsPerRun": 1000, "MinimumVersionAgeDays": 30 },
-  "Retry": { "MaxRetries": 3, "BaseDelaySeconds": 2, "MaxDelaySeconds": 60 },
+  "Retry": { "MaxRetries": 5, "BaseDelaySeconds": 2, "MaxDelaySeconds": 60 },
   "Audit": { "CopyDirectory": "" }
 }
 ```
@@ -195,10 +195,12 @@ As seções abaixo são opcionais; estes padrões se aplicam quando omitidas:
 |---|---|---|
 | `Safety.MaxVersionsPerRun` | Inteiro 1–1000000; padrão 1000 | Máximo de exclusões confirmadas por execução de site. Havendo mais candidatas, registra `RunLimitReached` e pausa com `Status=Deferred`, preservando pendências. Não é limite diário. Na CLI/agendamento sem `-PassThru`, retorna código 3 para permitir nova tentativa. |
 | `Safety.MinimumVersionAgeDays` | Inteiro 0–36500; padrão 30 | Idade mínima das versões excedentes. `0` permite testar versões recém-criadas. Preserva sempre a versão atual e as N históricas mais recentes. |
-| `Retry.MaxRetries` | Inteiro 0–10; padrão 3 | Tentativas adicionais por chamada; zero desativa as tentativas do programa. O SDK pode ter tentativas próprias. |
+| `Retry.MaxRetries` | Inteiro 0–10; padrão 5 | Tentativas adicionais por chamada; zero desativa as tentativas do programa. O SDK pode ter tentativas próprias. |
 | `Retry.BaseDelaySeconds` | Inteiro 1–300; padrão 2 | Espera inicial, crescendo exponencialmente, com pequena variação aleatória. |
 | `Retry.MaxDelaySeconds` | Inteiro 1–3600; padrão 60; maior ou igual à espera inicial | Teto da espera calculada. Um `Retry-After` maior enviado pelo servidor prevalece. |
 | `Audit.CopyDirectory` | Texto; padrão vazio | Diretório absoluto local ou UNC acessível à conta da tarefa. Recebe cópia dos JSONL desta execução ao final. Vazio desativa; não aceita URL HTTP. |
+
+Desde a v1.4.7, o padrão é de cinco repetições além da chamada inicial (até seis chamadas), com esperas-base de **2, 4, 8, 16 e 32 segundos**. Cada espera mantém uma variação aleatória de menos de um segundo, e um `Retry-After` maior prevalece. O padrão vale para novas configurações do wizard e quando `Retry.MaxRetries` é omitido. Em um JSON existente com `MaxRetries: 3` explícito, altere esse campo para `5` para adotar a nova política; valores explícitos continuam sendo respeitados. O Agendador mantém sua política separada de três reinícios a cada 15 minutos.
 
 As tentativas cobrem timeouts, erros de rede reconhecidos e HTTP 408, 429, 500, 502, 503 e 504. Erros permanentes são registrados sem repetição imediata. O tratamento respeita a orientação da [Microsoft sobre Retry-After](https://learn.microsoft.com/en-us/sharepoint/dev/general-development/how-to-avoid-getting-throttled-or-blocked-in-sharepoint-online).
 

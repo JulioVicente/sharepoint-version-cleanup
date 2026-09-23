@@ -45,7 +45,7 @@ function Read-CleanupConfiguration {
     if (-not $value.ContainsKey('Sampling')) { $value.Sampling = @{} }
     $defaults = @{
         Safety = @{ MaxVersionsPerRun = 1000; MinimumVersionAgeDays = 30 }
-        Retry = @{ MaxRetries = 3; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
+        Retry = @{ MaxRetries = 5; BaseDelaySeconds = 2; MaxDelaySeconds = 60 }
         Audit = @{ CopyDirectory = '' }
         Sampling = @{ Enabled = $true; SamplesPerLibrary = 1; SizeWeight = 1; RecencyWeight = 4; RecencyHalfLifeDays = 30 }
     }
