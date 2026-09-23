@@ -10,6 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Formatting.ps1')
 $cleanupScript = Join-Path $PSScriptRoot 'cleanup-versions.ps1'
 if (-not (Test-Path -LiteralPath $cleanupScript)) { throw "Script ausente: $cleanupScript" }
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Configuracao ausente: $ConfigPath" }
@@ -31,6 +32,7 @@ Write-Host "Site: $($report.SiteUrl)"
 Write-Host "Modo: $(if ($report.Apply) { 'APLICADO' } else { 'SIMULACAO' })"
 Write-Host "Arquivos: $($report.FilesProcessed)"
 Write-Host "Versoes elegiveis: $($report.VersionsEligible); removidas: $($report.VersionsDeleted)"
+Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $report.BytesEligible), (Format-CleanupSize $report.BytesFreed))
 Write-Host "Ignorados: $($report.FilesSkipped)"
 Write-Host "Relatorio: $($report.ReportPath)"
 if ($report.Status -eq 'Deferred') {

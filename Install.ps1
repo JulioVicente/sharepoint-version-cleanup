@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.5',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.6',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -33,6 +33,7 @@ $script:RequiredFiles = @(
     'scripts/Configuration.ps1',
     'scripts/Diagnostics.ps1',
     'scripts/Progress.ps1',
+    'scripts/Formatting.ps1',
     'scripts/TaskIdentity.ps1',
     'scripts/Test-ServiceContext.ps1',
     'scripts/Resilience.ps1',
@@ -927,7 +928,7 @@ function Show-CleanupSummary {
     param($Report)
     Write-Host "Arquivos concluidos: $($Report.FilesProcessed); sem alteracao: $($Report.FilesUnchanged); ignorados: $($Report.FilesSkipped)"
     Write-Host "Versoes elegiveis: $($Report.VersionsEligible); excluidas: $($Report.VersionsDeleted)"
-    Write-Host ('Espaco estimado: {0:N2} MB; liberado: {1:N2} MB' -f ($Report.BytesEligible / 1MB), ($Report.BytesFreed / 1MB))
+    Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $Report.BytesEligible), (Format-CleanupSize $Report.BytesFreed))
     Write-Host "Relatorio: $($Report.ReportPath)"
     if ($Report.PSObject.Properties['Status'] -and $Report.Status -eq 'Deferred') {
         Write-Host 'Lote pausado pelo limite de exclusoes. O escopo ainda tem pendencias; os contadores nao representam uma varredura completa.' -ForegroundColor Yellow

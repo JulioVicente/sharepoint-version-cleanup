@@ -417,6 +417,7 @@ if ($PassThru) { [pscustomobject]$report }
 else {
     Write-Host "Arquivos: $($report.FilesProcessed); sem alteracao: $($report.FilesUnchanged); ignorados: $($report.FilesSkipped)"
     Write-Host "Versoes elegiveis: $($report.VersionsEligible); excluidas: $($report.VersionsDeleted)"
+    Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $report.BytesEligible), (Format-CleanupSize $report.BytesFreed))
     Write-Host "Relatorio: $($report.ReportPath)"
     # Nonzero keeps Task Scheduler's bounded retries. Callers using PassThru,
     # including the wizard, receive the structured result instead of an exception.

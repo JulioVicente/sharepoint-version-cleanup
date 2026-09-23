@@ -64,7 +64,7 @@ function Get-UninstallPlan {
     # Fixed allowlist: never trust paths supplied by an installed manifest or JSON.
     $owned = @(
         'scripts/cleanup-versions.ps1','scripts/Send-EmailReport.ps1','scripts/Configuration.ps1',
-        'scripts/Diagnostics.ps1','scripts/Progress.ps1','scripts/TaskIdentity.ps1',
+        'scripts/Diagnostics.ps1','scripts/Progress.ps1','scripts/Formatting.ps1','scripts/TaskIdentity.ps1',
         'scripts/Test-ServiceContext.ps1','scripts/Resilience.ps1','scripts/Sampling.ps1',
         'scripts/Get-DailyAudit.ps1','scripts/Invoke-Pilot.ps1','scripts/Enable-Production.ps1',
         'scripts/Validate-Prerequisites.ps1','scripts/Uninstall.ps1',

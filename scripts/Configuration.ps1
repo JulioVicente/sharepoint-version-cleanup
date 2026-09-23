@@ -1,6 +1,7 @@
 #requires -Version 7.4.6
 # Shared validation; dot-sourcing this file has no external effects.
 . (Join-Path $PSScriptRoot 'Progress.ps1')
+. (Join-Path $PSScriptRoot 'Formatting.ps1')
 . (Join-Path $PSScriptRoot 'Diagnostics.ps1')
 function Test-CleanupPilotResult {
     param([Parameter(Mandatory)]$Report)

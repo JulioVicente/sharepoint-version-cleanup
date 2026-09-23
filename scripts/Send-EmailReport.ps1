@@ -9,6 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'Formatting.ps1')
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 if (-not $config.Email.Enabled) { return }
 
@@ -38,10 +39,10 @@ $values = @{
     FOLDER = [Net.WebUtility]::HtmlEncode([string]$report.FolderServerRelativeUrl)
     UNCHANGED = [string]$report.FilesUnchanged
     ELIGIBLE = [string]$report.VersionsEligible
-    ESTIMATED = ('{0:N2} GB' -f ([double]$report.BytesEligible / 1GB))
+    ESTIMATED = (Format-CleanupSize -Bytes $report.BytesEligible)
     MODE = $(if ($report.Apply) { 'Aplicacao' } else { 'Simulacao' })
     FILES = [string]$report.FilesProcessed; DELETED = [string]$report.VersionsDeleted
-    FREED = ('{0:N2} GB' -f ([double]$report.BytesFreed / 1GB))
+    FREED = (Format-CleanupSize -Bytes $report.BytesFreed)
     SKIPPED = [string]$report.FilesSkipped; WARNINGS = $warningText
     ERROR = [Net.WebUtility]::HtmlEncode([string]$report.Error)
     FINISHED = ([datetime]$report.FinishedAt).ToString('dd/MM/yyyy HH:mm:ss')
