@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.7',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.8',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -927,6 +927,9 @@ function Invoke-SetupValidation {
 function Show-CleanupSummary {
     param($Report)
     Write-Host "Arquivos concluidos: $($Report.FilesProcessed); sem alteracao: $($Report.FilesUnchanged); ignorados: $($Report.FilesSkipped)"
+    if ($Report.PSObject.Properties['FilesResumed'] -and $Report.FilesResumed) {
+        Write-Host "Analises reaproveitadas da simulacao interrompida: $($Report.FilesResumed) (incluidas nos totais)"
+    }
     Write-Host "Versoes elegiveis: $($Report.VersionsEligible); excluidas: $($Report.VersionsDeleted)"
     Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $Report.BytesEligible), (Format-CleanupSize $Report.BytesFreed))
     Write-Host "Relatorio: $($Report.ReportPath)"

@@ -127,3 +127,9 @@ Periodicidade no assistente: D para diaria, S para semanal (padrao S). No JSON, 
 ## v1.3.7: checkpoint de uma politica anterior
 
 Ao alterar a quantidade de versões mantidas ou a idade mínima, o checkpoint antigo é preservado como `.json.policy-<execucao>.bak` na pasta state. A nova execução reavalia os arquivos com a política atual. Isso também vale para a simulação, que continua sem excluir versões. Checkpoints de outro site ou modo são recusados; JSON ou estrutura inválida são preservados para diagnóstico e reconstruídos. Uma falha de checkpoint é estado local, não falta de consentimento no Entra.
+
+## v1.4.8: retomar simulacao apos falha de conexao
+
+O retry automatico repete a chamada que falhou. Se a execucao falhar e voce confirmar `Apos corrigir, deseja tentar novamente?`, o wizard inicia outra tentativa e reutiliza as analises completas e ainda validas da simulacao interrompida. A mesma retomada funciona repetindo a CLI no mesmo escopo e com o mesmo diretorio de estado. Nao use CleanInstall nem remova state para retomar.
+
+A enumeracao e a conferencia de metadados comecam novamente; o indice pode voltar a 1. Procure `Analise anterior reaproveitada` e o contador `FilesResumed`. Os totais incluem esses resultados uma unica vez. Arquivos alterados, falhas, ausencia de assinatura, politica diferente, resultado com mais de 24 horas ou idade minima vencida exigem nova consulta de historico. Resultados salvos antes da v1.4.8 nao permitem a retomada detalhada. Ao concluir a simulacao, o checkpoint e removido.

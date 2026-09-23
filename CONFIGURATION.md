@@ -136,9 +136,9 @@ Editar `Schedule` não modifica gatilhos já registrados. Use novamente o wizard
 
 Não há expansão automática de `%ProgramData%` ou `$env:ProgramData` dentro do JSON: grave o caminho resolvido. Os diretórios são criados se necessário.
 
-O modo aplicado enumera os itens atuais e compara `UniqueId`, `Modified` e `_UIVersionString` com o inventário da última limpeza. Arquivos sem alteração dispensam a consulta de histórico; os novos/alterados são processados. Se metadados estiverem ausentes, o arquivo é processado normalmente. A simulação sempre consulta o histórico. Isso é processamento incremental por arquivo; não usa a API delta nem evita enumerar a biblioteca.
+O modo aplicado enumera os itens atuais e compara `UniqueId`, `Modified` e `_UIVersionString` com o inventário da última limpeza. Arquivos sem alteração dispensam a consulta de histórico; os novos/alterados são processados. Se metadados estiverem ausentes, o arquivo é processado normalmente. Uma nova simulação consulta o histórico; uma simulação interrompida pode reaproveitar análises válidas na retomada. Isso é processamento incremental por arquivo; não usa a API delta nem evita enumerar a biblioteca.
 
-O checkpoint registra arquivos concluídos após sucesso, separado por site, modo e pasta. Uma URL registrada não dispensa a reavaliação: a próxima execução compara a assinatura atual com o inventário e verifica a data de reavaliação das versões protegidas por idade. Sem assinatura confiável, consulta novamente o histórico. A simulação sempre faz uma leitura nova. Na conclusão, remove o checkpoint. Mudanças de política invalidam o inventário e arquivam automaticamente o checkpoint anterior. JSON de estado inválido é preservado em `.invalid-*.bak` antes da reconstrução; configuração inválida e checkpoint de outro site/modo são recusados.
+O checkpoint registra arquivos concluídos após sucesso, separado por site, modo e pasta. Uma URL registrada não dispensa a reavaliação: a próxima execução compara a assinatura atual com o inventário e verifica a data de reavaliação das versões protegidas por idade. Sem assinatura confiável, consulta novamente o histórico. Desde a v1.4.8, a simulação interrompida grava resultados por arquivo no próprio checkpoint (`SimulationResults`). Ao tentar novamente no wizard ou repetir a CLI com o mesmo site, pasta, política e diretório de estado, enumera os itens atuais e reaproveita somente análises concluídas com assinatura igual (`UniqueId`, `Modified`, `_UIVersionString`), após conferir conformidade e checkout. Arquivos novos, alterados, incompletos ou sem assinatura são consultados novamente. Arquivos removidos ou fora do escopo atual não contribuem para os totais. Resultados vencem em até 24 horas da análise, ou antes quando uma versão atinge a idade mínima. Checkpoints antigos sem resultados detalhados não permitem esse reaproveitamento. Na conclusão, remove o checkpoint. Mudanças de política invalidam o inventário e arquivam automaticamente o checkpoint anterior. JSON de estado inválido é preservado em `.invalid-*.bak` antes da reconstrução; configuração inválida e checkpoint de outro site/modo são recusados.
 
 O arquivo `.lock` pode permanecer no disco. A exclusividade vem do handle aberto, não de sua existência. Não o apague durante uma execução. Use o mesmo diretório de estado para operações concorrentes no mesmo site. Caminhos diferentes não compartilham esse lock.
 
@@ -171,7 +171,7 @@ Não use o JSON para armazenar tokens, senhas em texto puro, chaves privadas ou 
 
 ## Relatório de execução
 
-`Success`, `Error`, `SiteUrl`, `FolderServerRelativeUrl`, `Apply` e `VersionsToKeep` identificam o resultado e escopo. `FilesProcessed`, `FilesUnchanged` e `FilesSkipped` diferenciam processamento, cache incremental e proteção/falha. `VersionsEligible`/`BytesEligible` indicam o potencial; `VersionsDeleted`/`BytesFreed` contam apenas exclusões efetivas. Os bytes refletem tamanhos reportados pelo provedor e não garantem atualização imediata da quota do SharePoint. `Warnings`, `NotificationError`, `StartedAt`, `FinishedAt`, `LogPath` e `ReportPath` completam o diagnóstico. Os contadores são da invocação atual, não o acumulado de todas as retomadas.
+`Success`, `Error`, `SiteUrl`, `FolderServerRelativeUrl`, `Apply` e `VersionsToKeep` identificam o resultado e escopo. `FilesProcessed`, `FilesUnchanged` e `FilesSkipped` diferenciam processamento, cache incremental e proteção/falha. `VersionsEligible`/`BytesEligible` indicam o potencial; `VersionsDeleted`/`BytesFreed` contam apenas exclusões efetivas. Os bytes refletem tamanhos reportados pelo provedor e não garantem atualização imediata da quota do SharePoint. `Warnings`, `NotificationError`, `StartedAt`, `FinishedAt`, `LogPath` e `ReportPath` completam o diagnóstico. No modo aplicado, os contadores são da invocação atual. Na simulação retomada, `FilesProcessed`, `VersionsEligible` e `BytesEligible` incluem análises válidas reaproveitadas e análises novas, uma vez por arquivo presente no escopo atual. `FilesResumed` é a parcela reaproveitada de `FilesProcessed`; não deve ser somada novamente. Os erros e arquivos ignorados correspondem à tentativa atual.
 
 ## Referências de comportamento do provedor
 
@@ -219,7 +219,8 @@ Cada linha contém `Timestamp`, `RunId`, `SiteUrl`, `FolderServerRelativeUrl`, `
 | `RunStarted` / `RunCompleted` | Início e resultado final. O início inclui identidade da execução e SHA256 do script. |
 | `LibraryScanned` / `DirectoryScanned` | Bibliotecas e diretórios encontrados na varredura. |
 | `RetentionDecision` | IDs preservados, elegíveis e adiados pela idade; regra aplicada e preservação da versão atual. |
-| `VersionWouldDelete` | Exclusão simulada. |
+| `VersionWouldDelete` | Exclusão simulada em uma análise nova. |
+| `SimulationFileResumed` | Análise reaproveitada; traz `SourceRunId`, `SourceAuditPaths`, `CheckedAt` e os totais originais. Não repete eventos de exclusão simulada. |
 | `VersionDeleteRequested` / `VersionDeleted` | Tentativa de exclusão / sucesso retornado pelo provedor. |
 | `VersionDeleteFailed` | Erro da exclusão. Se houve timeout, a próxima leitura confirma o estado remoto. |
 | `FileCompleted` / `FileFailed` / `FileSkipped` | Resultado por arquivo e motivo. O conteúdo do arquivo não é modificado. |
@@ -248,6 +249,10 @@ O email identifica o lote como **PAUSADO PELO LIMITE**. A auditoria registra `Ru
 Falhas por arquivo ou biblioteca permitem continuar os demais. Qualquer falha operacional resulta em saída diferente de zero e conserva checkpoint; a retomada reavalia o histórico atual dos arquivos incompletos. Autenticação inválida, estado corrompido ou impossibilidade de gravar auditoria podem impedir continuidade. Uma interrupção abrupta pode deixar início sem evento de conclusão. Nenhum programa é imune a falhas.
 
 A cópia externa ocorre ao final, não é transmissão contínua nem armazenamento imutável. Não há reenvio automático de cópias antigas nem expiração automática de logs. Preserve os JSONL locais até confirmar a cópia.
+
+A retomada da simulação exibe `Conferindo arquivo ...` durante a enumeração e informa `Analise anterior reaproveitada` quando dispensa a consulta de histórico. O índice pode voltar a 1 porque representa a conferência da lista atual; não significa refazer todos os históricos. Tela, email e JSON destacam `FilesResumed`. O resumo diário conta os eventos novos; o relatório da simulação retomada também inclui estimativas reaproveitadas e referencia a auditoria original.
+
+As análises reaproveitadas são estimativas observadas na data `CheckedAt`, não uma transação instantânea do SharePoint. Alterações externas apenas no histórico podem não mudar a assinatura do arquivo. A aplicação consulta o histórico atual e arquiva o checkpoint de simulação do mesmo escopo antes de processar, para evitar reutilizar estimativas anteriores às próprias exclusões. Após uma simulação concluída, o checkpoint é removido e a próxima simulação faz uma análise nova.
 
 ## Amostragem ponderada do incremental
 

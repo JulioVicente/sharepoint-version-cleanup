@@ -59,12 +59,13 @@ catch { throw "[SPVC-STORAGE] Nao foi possivel preparar logs '$($config.Paths.Lo
 
 $lock = $null
 $transcriptStarted = $false
+$simulationResults = @{}
 $report = [ordered]@{
     Success = $false; Status = 'Failed'; SiteUrl = $SiteUrl; StartedAt = $startedAt; FinishedAt = $null
     Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep; FilesProcessed = 0; VersionsDeleted = 0; BytesFreed = 0
     VersionsEligible = 0; BytesEligible = 0; NotificationError = $null
     FolderServerRelativeUrl = $scopeFolder
-    FilesUnchanged = 0; ReportPath = (Join-Path $config.Paths.Logs "report-$siteKey-$runId.json")
+    FilesUnchanged = 0; FilesResumed = 0; ReportPath = (Join-Path $config.Paths.Logs "report-$siteKey-$runId.json")
     FilesSkipped = 0; Warnings = [Collections.Generic.List[string]]::new(); Error = $null; LogPath = $logPath
     AuditPaths = [Collections.Generic.List[string]]::new()
     FilesFailed = 0; LibrariesFailed = 0; Errors = [Collections.Generic.List[string]]::new()
@@ -102,10 +103,11 @@ function Invoke-PnPRequest {
 function Save-Checkpoint([string]$FileUrl) {
     # Atomic replacement prevents truncated state after interruption.
     if ($FileUrl) { $completed.Add($FileUrl) | Out-Null }
-    @{ SiteUrl = $SiteUrl; Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep
+    $checkpoint = @{ SiteUrl = $SiteUrl; Apply = [bool]$Apply; VersionsToKeep = $config.VersionsToKeep
         PolicyKey = $policyKey
-        CompletedFiles = @($completed); UpdatedAt = (Get-Date).ToString('o') } |
-        ConvertTo-Json -Depth 4 | Set-Content -LiteralPath "$checkpointPath.tmp" -Encoding utf8
+        CompletedFiles = @($completed); UpdatedAt = (Get-Date).ToString('o') }
+    if (-not $Apply) { $checkpoint.SimulationResults = $simulationResults }
+    $checkpoint | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath "$checkpointPath.tmp" -Encoding utf8
     [IO.File]::Move("$checkpointPath.tmp", $checkpointPath, $true)
 }
 
@@ -135,6 +137,16 @@ try {
 
     $completed = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $inventory = @{}
+    if ($Apply) {
+        $simulationCheckpoint = Join-Path $config.Paths.State "checkpoint-$siteKey-simulation-$scopeKey.json"
+        if (Test-Path -LiteralPath $simulationCheckpoint) {
+            # Deleting historical versions may not change the current file signature.
+            # Never reuse our pre-application simulation after an applied run.
+            $archive = "$simulationCheckpoint.applied-$runId.bak"
+            [IO.File]::Move($simulationCheckpoint, $archive)
+            Write-AuditEvent -Event 'CheckpointArchived' -Outcome 'Success' -Reason 'Execucao aplicada invalida resultados de simulacao anteriores.' -Details @{ArchivePath=$archive}
+        }
+    }
     if ($Apply -and (Test-Path -LiteralPath $inventoryPath)) {
         $savedInventory = Read-CleanupState -Path $inventoryPath -Validate {
             param($s)
@@ -150,7 +162,22 @@ try {
         }
     }
     if (Test-Path -LiteralPath $checkpointPath) {
-        $savedCheckpoint = Read-CleanupState -Path $checkpointPath -Validate { param($s) $s.ContainsKey('SiteUrl') -and $s.ContainsKey('Apply') -and $s.CompletedFiles -is [array] }
+        $savedCheckpoint = Read-CleanupState -Path $checkpointPath -Validate {
+            param($s)
+            if (-not $s.ContainsKey('SiteUrl') -or -not $s.ContainsKey('Apply') -or $s.CompletedFiles -isnot [array]) { return $false }
+            if ($s.ContainsKey('SimulationResults')) {
+                if ($s.SimulationResults -isnot [Collections.IDictionary]) { return $false }
+                foreach ($entry in $s.SimulationResults.Values) {
+                    if ($entry -isnot [Collections.IDictionary] -or -not $entry.Signature -or -not $entry.SourceRunId -or
+                        -not $entry.CheckedAt -or -not $entry.ValidUntil -or $entry.SourceAuditPaths -isnot [array]) { return $false }
+                    foreach ($key in 'VersionsEligible','BytesEligible') {
+                        if (($entry[$key] -isnot [int] -and $entry[$key] -isnot [long]) -or $entry[$key] -lt 0) { return $false }
+                    }
+                    if ([datetime]$entry.ValidUntil -le [datetime]$entry.CheckedAt) { return $false }
+                }
+            }
+            return $true
+        }
         if ($savedCheckpoint -and ($savedCheckpoint.SiteUrl -ne $SiteUrl -or $savedCheckpoint.Apply -ne [bool]$Apply -or
             -not $savedCheckpoint.ContainsKey('VersionsToKeep') -or -not $savedCheckpoint.ContainsKey('CompletedFiles'))) {
             throw "Checkpoint incompativel com o site ou modo, ou incompleto: $checkpointPath. Revise esse arquivo antes de reiniciar."
@@ -164,8 +191,13 @@ try {
                 ArchivePath = $archivePath; PreviousVersionsToKeep = $savedCheckpoint.VersionsToKeep; CurrentPolicyKey = $policyKey
             }
         }
-        # A URL-only checkpoint cannot prove the file is still unchanged or that
-        # deferred versions are still too young. Re-evaluate using the inventory.
+        if (-not $Apply -and $savedCheckpoint -and $savedCheckpoint.ContainsKey('PolicyKey') -and
+            $savedCheckpoint.PolicyKey -eq $policyKey -and $savedCheckpoint.ContainsKey('SimulationResults') -and $savedCheckpoint.SimulationResults) {
+            $simulationResults = $savedCheckpoint.SimulationResults
+            Write-Host "Retomada da simulacao: $($simulationResults.Count) analises salvas; conferindo metadados atuais antes de reutilizar."
+        }
+        # URL-only checkpoints are not enough to reuse a result. Applied runs use
+        # their inventory; simulations reuse only matching, unexpired snapshots.
     }
     $scannedDirectories = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     $libraries = Invoke-PnPRequest { Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $scopeFolder -Connection $connection }
@@ -197,7 +229,8 @@ try {
             if ($scannedDirectories.Add($directory)) { Write-AuditEvent -Event 'DirectoryScanned' -Outcome 'Success' -FileUrl $directory }
             if ([int]$item['FSObjType'] -ne 0) { continue }
             $fileIndex++
-            Write-Host "Arquivo $fileIndex de $fileCount : $fileUrl"
+            if (-not $Apply -and $simulationResults.Count) { Write-Host "Conferindo arquivo $fileIndex de $fileCount : $fileUrl" }
+            else { Write-Host "Arquivo $fileIndex de $fileCount : $fileUrl" }
             if ($completed.Contains($fileUrl)) {
                 Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Concluido anteriormente neste checkpoint.'
                 continue
@@ -239,6 +272,27 @@ try {
                     continue
                 }
 
+                $cached = if (-not $Apply) { $simulationResults[$fileUrl] } else { $null }
+                if ($cached -and $signature -and $cached.Signature -eq $signature -and
+                    [datetime]$cached.CheckedAt -le $startedAt.ToUniversalTime() -and
+                    [datetime]$cached.ValidUntil -gt $startedAt.ToUniversalTime()) {
+                    Write-AuditEvent -Event 'SimulationFileResumed' -Outcome 'Reused' -FileUrl $fileUrl `
+                        -Reason 'Analise concluida na simulacao interrompida; assinatura igual e resultado dentro da validade.' `
+                        -Details @{ SourceRunId=$cached.SourceRunId; SourceAuditPaths=@($cached.SourceAuditPaths)
+                            CheckedAt=$cached.CheckedAt; VersionsEligible=$cached.VersionsEligible; BytesEligible=$cached.BytesEligible }
+                    $report.FilesProcessed++
+                    $report.FilesResumed++
+                    $report.VersionsEligible += $cached.VersionsEligible
+                    $report.BytesEligible += $cached.BytesEligible
+                    Write-Host "  Analise anterior reaproveitada; historico nao consultado novamente."
+                    Save-Checkpoint $fileUrl
+                    continue
+                }
+                if (-not $Apply -and $simulationResults.ContainsKey($fileUrl)) {
+                    $simulationResults.Remove($fileUrl)
+                    Save-Checkpoint ''
+                }
+
                 # Keep N historical versions in addition to the current version.
                 $versions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $fileUrl -Connection $connection } -Activity 'Consultando historico de versoes...' |
                     Where-Object { -not ($_.PSObject.Properties.Name -contains 'IsCurrentVersion' -and $_.IsCurrentVersion) } |
@@ -276,6 +330,22 @@ try {
                 }
                 $report.FilesProcessed++
                 Write-AuditEvent -Event 'FileCompleted' -Outcome 'Success' -FileUrl $fileUrl -Details @{ EligibleCount = $obsolete.Count; ContentModified = $false }
+                if (-not $Apply -and $signature) {
+                    # Bound snapshots to interrupted simulations and at most 24h;
+                    # recheck sooner when an excluded version reaches minimum age.
+                    $validUntil = $startedAt.ToUniversalTime().AddHours(24)
+                    if ($tooRecent.Count) {
+                        $nextEligible = ($tooRecent | Sort-Object Created | Select-Object -First 1).Created.ToUniversalTime().AddDays($config.Safety.MinimumVersionAgeDays)
+                        if ($nextEligible -lt $validUntil) { $validUntil = $nextEligible }
+                    }
+                    $eligibleBytes = 0L
+                    foreach ($version in $obsolete) {
+                        if ($version.PSObject.Properties.Name -contains 'Size') { $eligibleBytes += [long]$version.Size }
+                    }
+                    $simulationResults[$fileUrl] = @{ Signature=$signature; CheckedAt=$startedAt.ToUniversalTime().ToString('o')
+                        ValidUntil=$validUntil.ToString('o'); VersionsEligible=$obsolete.Count; BytesEligible=$eligibleBytes
+                        SourceRunId=$runId; SourceAuditPaths=@($report.AuditPaths) }
+                }
                 if ($Apply -and $signature) {
                     $recheckAt = if ($tooRecent.Count) {
                         (($tooRecent | Sort-Object Created | Select-Object -First 1).Created.ToUniversalTime().AddDays($config.Safety.MinimumVersionAgeDays)).ToString('o')
@@ -380,7 +450,7 @@ try {
     $reportPath = Join-Path $config.Paths.Logs "report-$siteKey-$runId.json"
     try {
     Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } elseif ($report.Status -eq 'Deferred') { 'Deferred' } else { 'Failed' }) -ErrorMessage $report.Error `
-        -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesSkipped = $report.FilesSkipped
+        -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesResumed = $report.FilesResumed; FilesSkipped = $report.FilesSkipped
             VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted; Status = $report.Status; LimitReached = $report.LimitReached }
     if ($config.Audit.CopyDirectory) {
         try {
@@ -416,6 +486,7 @@ if (-not $Apply) {
 if ($PassThru) { [pscustomobject]$report }
 else {
     Write-Host "Arquivos: $($report.FilesProcessed); sem alteracao: $($report.FilesUnchanged); ignorados: $($report.FilesSkipped)"
+    if ($report.FilesResumed) { Write-Host "Analises reaproveitadas da simulacao interrompida: $($report.FilesResumed) (incluidas nos totais)" }
     Write-Host "Versoes elegiveis: $($report.VersionsEligible); excluidas: $($report.VersionsDeleted)"
     Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $report.BytesEligible), (Format-CleanupSize $report.BytesFreed))
     Write-Host "Relatorio: $($report.ReportPath)"

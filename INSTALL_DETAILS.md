@@ -6,7 +6,7 @@
 
 PnP.PowerShell 3.x e Microsoft.Graph.Authentication 2.x compatíveis já presentes em AllUsers são reutilizados. Quando ausentes, são instaladas as versões 3.0.0 e 2.25.0, respectivamente. A importação usa o manifesto compartilhado. O requisito PowerShell 7.4.6 segue a [publicação oficial do PnP 3](https://pnp.github.io/blog/pnp-powershell/pnp-powershell-v3-0-0/).
 
-O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.7 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
+O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.8 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
 Os scripts de operação exigem PowerShell 7.4.6+ e PnP.PowerShell 3.x. O diagnóstico de pré-requisitos também pode ser executado em Windows PowerShell 5.1. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
@@ -59,9 +59,9 @@ Para limpar a instalação anterior e abrir o wizard novamente:
 Também é possível baixar o lançador versionado e executá-lo com parâmetros:
 
 ```powershell
-.\sharepoint-version-cleanup-v1.4.7.ps1 -Uninstall -WhatIf
-.\sharepoint-version-cleanup-v1.4.7.ps1 -Uninstall
-.\sharepoint-version-cleanup-v1.4.7.ps1 -CleanInstall -InstallPath 'C:\SPCleanup'
+.\sharepoint-version-cleanup-v1.4.8.ps1 -Uninstall -WhatIf
+.\sharepoint-version-cleanup-v1.4.8.ps1 -Uninstall
+.\sharepoint-version-cleanup-v1.4.8.ps1 -CleanInstall -InstallPath 'C:\SPCleanup'
 ```
 
 `-WhatIf` no bootstrap apenas descreve o modo, sem baixar ou executar componentes. Para inspecionar localmente as tarefas e os componentes identificados em uma instalação da v1.4.4+, use PowerShell 7: `& "$env:ProgramData\SharePointVersionCleanup\scripts\Uninstall.ps1" -WhatIf`. O script local aceita `-InstallPath` para outro destino. O desinstalador não importa Graph/PnP nem exige login no Microsoft 365; o bootstrap precisa de PowerShell 7.4.6+ para executá-lo.
@@ -78,7 +78,7 @@ Em falha parcial, os arquivos já arquivados permanecem no backup e tarefas já 
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.4.7` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`. Os modos de limpeza exigem uma revisão que inclua `scripts/Uninstall.ps1`.
+O bootstrap instala componentes da tag `v1.4.8` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`. Os modos de limpeza exigem uma revisão que inclua `scripts/Uninstall.ps1`.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 

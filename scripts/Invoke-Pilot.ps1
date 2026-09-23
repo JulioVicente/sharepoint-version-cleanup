@@ -31,6 +31,7 @@ Write-Host "`nResultado do piloto" -ForegroundColor Cyan
 Write-Host "Site: $($report.SiteUrl)"
 Write-Host "Modo: $(if ($report.Apply) { 'APLICADO' } else { 'SIMULACAO' })"
 Write-Host "Arquivos: $($report.FilesProcessed)"
+if ($report.FilesResumed) { Write-Host "Analises reaproveitadas: $($report.FilesResumed) (incluidas nos totais)" }
 Write-Host "Versoes elegiveis: $($report.VersionsEligible); removidas: $($report.VersionsDeleted)"
 Write-Host ('Espaco estimado: {0}; liberado: {1}' -f (Format-CleanupSize $report.BytesEligible), (Format-CleanupSize $report.BytesFreed))
 Write-Host "Ignorados: $($report.FilesSkipped)"

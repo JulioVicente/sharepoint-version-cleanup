@@ -38,6 +38,7 @@ $values = @{
     SITE = [Net.WebUtility]::HtmlEncode([string]$report.SiteUrl)
     FOLDER = [Net.WebUtility]::HtmlEncode([string]$report.FolderServerRelativeUrl)
     UNCHANGED = [string]$report.FilesUnchanged
+    RESUMED = $(if ($report.PSObject.Properties['FilesResumed']) { [string]$report.FilesResumed } else { '0' })
     ELIGIBLE = [string]$report.VersionsEligible
     ESTIMATED = (Format-CleanupSize -Bytes $report.BytesEligible)
     MODE = $(if ($report.Apply) { 'Aplicacao' } else { 'Simulacao' })

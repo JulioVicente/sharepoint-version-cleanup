@@ -110,6 +110,150 @@ Describe 'cleanup-versions.ps1' {
         $report.BytesFreed | Should -Be 0
     }
 
+    It 'retoma simulacao por arquivo sem duplicar totais apos repetidas falhas' {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/c.docx';Modified=[datetime]'2026-09-01';UniqueId='c';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'conexao interrompida' } -ParameterFilter { $Url -eq '/docs/c.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru } | Should -Throw '*conexao interrompida*'
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru } | Should -Throw '*conexao interrompida*'
+        Mock Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } } -ParameterFilter { $Url -eq '/docs/c.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Success | Should -BeTrue
+        $r.FilesResumed | Should -Be 2
+        $r.FilesProcessed | Should -Be 3
+        $r.VersionsEligible | Should -Be 6
+        $r.BytesEligible | Should -Be 80
+        $r.BytesFreed | Should -Be 0
+        Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+        Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $events = @(Get-Content $r.AuditPaths | ForEach-Object { $_ | ConvertFrom-Json })
+        @($events | Where-Object Event -eq 'SimulationFileResumed').Count | Should -Be 2
+        @($events | Where-Object Event -eq 'VersionWouldDelete').Count | Should -Be 2
+        $source = @($events | Where-Object Event -eq 'SimulationFileResumed')[0].Details
+        $source.SourceRunId | Should -Not -BeNullOrEmpty
+        Test-Path -LiteralPath $source.SourceAuditPaths[0] | Should -BeTrue
+        @(Get-ChildItem $state -Filter '*simulation*.json').Count | Should -Be 0
+        $fresh = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $fresh.FilesResumed | Should -Be 0
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+
+    It 'reavalia simulacao quando resultado anterior nao e reutilizavel: <Case>' -ForEach @(
+        @{Case='alterado'}, @{Case='sem assinatura'}, @{Case='expirado'}, @{Case='politica'}, @{Case='corrompido'}
+    ) {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $cpPath = (Get-ChildItem $state -Filter '*simulation*.json').FullName
+        $cp = Get-Content $cpPath -Raw | ConvertFrom-Json -AsHashtable
+        switch ($Case) {
+            'alterado' {
+                Mock Get-PnPListItem { @(@{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-02';UniqueId='a';_UIVersionString='6.0'}) }
+            }
+            'sem assinatura' { Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx'} } }
+            'expirado' {
+                $cp.SimulationResults['/docs/a.docx'].CheckedAt = (Get-Date).AddDays(-2).ToString('o')
+                $cp.SimulationResults['/docs/a.docx'].ValidUntil = (Get-Date).AddDays(-1).ToString('o')
+                $cp | ConvertTo-Json -Depth 8 | Set-Content $cpPath
+            }
+            'politica' {
+                $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+                $cfg.VersionsToKeep = 1
+                $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+            }
+            'corrompido' {
+                $cp.SimulationResults['/docs/a.docx'].BytesEligible = -1
+                $cp | ConvertTo-Json -Depth 8 | Set-Content $cpPath
+            }
+        }
+        Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.FilesResumed | Should -Be 0
+        $r.Success | Should -BeTrue
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+
+    It 'ignora resultados de arquivo removido e analisa arquivo novo na retomada' {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/novo.docx';Modified=[datetime]'2026-09-01';UniqueId='novo';_UIVersionString='5.0'} }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.FilesResumed | Should -Be 0
+        $r.FilesProcessed | Should -Be 1
+        $r.VersionsEligible | Should -Be 2
+        $r.BytesEligible | Should -Be 30
+    }
+
+    It 'nao usa resultados simulados para executar exclusoes' {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
+        $r.FilesResumed | Should -Be 0
+        $r.VersionsDeleted | Should -Be 2
+        @(Get-ChildItem $state -Filter '*simulation*.applied-*.bak').Count | Should -Be 1
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+    }
+    It 'reavalia quando uma versao protegida atinge a idade minima durante a retomada' {
+        $clock = @{Now=[datetime]::UtcNow}
+        $firstTime = $clock.Now
+        Mock Get-Date { $clock.Now }
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion {
+            @(
+                [pscustomobject]@{Id=4;Created=$firstTime;Size=40},
+                [pscustomobject]@{Id=3;Created=$firstTime.AddDays(-1);Size=30},
+                [pscustomobject]@{Id=2;Created=$firstTime.AddDays(-10);Size=20},
+                [pscustomobject]@{Id=1;Created=$firstTime.AddDays(-30).AddMinutes(1);Size=10}
+            )
+        }
+        Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        $cp = Get-Content (Get-ChildItem $state -Filter '*simulation*.json').FullName -Raw | ConvertFrom-Json -AsHashtable
+        [datetime]$cp.SimulationResults['/docs/a.docx'].ValidUntil | Should -Be $firstTime.AddMinutes(1)
+        $clock.Now = $firstTime.AddMinutes(2)
+        Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.FilesResumed | Should -Be 0
+        $r.VersionsEligible | Should -Be 1
+        $r.BytesEligible | Should -Be 10
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+    }
+
+    It 'confere checkout novamente antes de reutilizar simulacao' {
+        Mock Get-PnPListItem { @(
+            @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0'},
+            @{FSObjType=0;FileRef='/docs/b.docx';Modified=[datetime]'2026-09-01';UniqueId='b';_UIVersionString='5.0'}
+        ) }
+        Mock Get-PnPFileVersion { throw 'interrompido' } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' } | Should -Throw '*interrompido*'
+        Mock Get-PnPFile { [pscustomobject]@{CheckOutType='Online'} } -ParameterFilter { $Url -eq '/docs/a.docx' }
+        Mock Get-PnPFileVersion { @() } -ParameterFilter { $Url -eq '/docs/b.docx' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.FilesResumed | Should -Be 0
+        $r.FilesSkipped | Should -Be 1
+        $r.BytesEligible | Should -Be 0
+        Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+    }
     It 'remove somente versoes excedentes quando Apply e informado' {
         & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply
 
