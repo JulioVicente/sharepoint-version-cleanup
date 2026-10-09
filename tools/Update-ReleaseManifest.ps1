@@ -10,5 +10,5 @@ $hashes = [ordered]@{}
 foreach ($relative in ($paths | Sort-Object -Unique)) {
     $hashes[$relative] = (Get-FileHash -LiteralPath (Join-Path $root $relative) -Algorithm SHA256).Hash
 }
-@{ Version = $Version; Algorithm = 'SHA256'; Files = $hashes } | ConvertTo-Json -Depth 6 |
+[ordered]@{ Version = $Version; Algorithm = 'SHA256'; Files = $hashes } | ConvertTo-Json -Depth 6 |
     Set-Content -LiteralPath (Join-Path $root 'release-manifest.json') -Encoding utf8

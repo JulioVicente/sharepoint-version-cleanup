@@ -10,13 +10,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'Formatting.ps1')
+. (Join-Path $PSScriptRoot 'Configuration.ps1')
 $cleanupScript = Join-Path $PSScriptRoot 'cleanup-versions.ps1'
 if (-not (Test-Path -LiteralPath $cleanupScript)) { throw "Script ausente: $cleanupScript" }
 if (-not (Test-Path -LiteralPath $ConfigPath)) { throw "Configuracao ausente: $ConfigPath" }
 
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-if ($SiteUrl -notin @($config.Sites)) {
+# Normalize exactly like cleanup-versions.ps1 and Enable-Production.ps1 so that a
+# URL typed with different casing or a trailing slash is not rejected as unregistered.
+$config = Read-CleanupConfiguration $ConfigPath
+$SiteUrl = ConvertTo-SiteUrl $SiteUrl
+if ($SiteUrl -notin $config.Sites) {
     throw 'O site piloto deve estar explicitamente cadastrado em config.json.'
 }
 
