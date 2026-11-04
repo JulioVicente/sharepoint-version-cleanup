@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.11',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.12',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -98,7 +98,8 @@ function Ensure-PnPModule {
     param()
     Write-Step '1 de 5 - Validando e instalando dependencias'
     if ($PSCmdlet.ShouldProcess('PnP.PowerShell', 'Preparar modulo para todos os usuarios')) {
-        $script:PnPModulePath = Ensure-CleanupModule -Name PnP.PowerShell -MinimumVersion 3.0.0 -InstallVersion 3.0.0 -Isolated
+        Write-Host 'PnP.PowerShell minimo: 3.4.1 (serie 3.x). Versoes antigas serao atualizadas automaticamente antes do login.'
+        $script:PnPModulePath = Ensure-CleanupModule -Name PnP.PowerShell -MinimumVersion 3.4.1 -InstallVersion 3.4.1 -Isolated
     }
 }
 
@@ -111,7 +112,10 @@ function Invoke-CleanupIsolated {
         param($Code, $Arguments, $Manifest)
         $ErrorActionPreference = 'Stop'
         $env:PNPPOWERSHELL_UPDATECHECK = 'false'
-        if ($Manifest) { Import-Module -Name $Manifest -ErrorAction Stop }
+        if ($Manifest) {
+            $env:PSModulePath = @((Join-Path $PSHOME 'Modules'),(Join-Path $env:ProgramFiles 'PowerShell/Modules')) -join [IO.Path]::PathSeparator
+            Import-Module -Name $Manifest -ErrorAction Stop
+        }
         & ([scriptblock]::Create($Code)) @Arguments
     } -ArgumentList $Action.ToString(), $ArgumentList, $ModulePath
     try {
@@ -169,10 +173,11 @@ function Ensure-CleanupModule {
     } | Sort-Object Version -Descending | Select-Object -First 1
     try {
         if (-not $module) {
+            Write-Host "Preparando $Name $InstallVersion para todos os usuarios; nenhum modulo compartilhado compativel foi encontrado."
             # Reinstall also repairs a partial folder whose manifest could not be discovered.
             Install-CleanupModulePackage -Name $Name -Version $InstallVersion -Reinstall
             $module = Get-Module -ListAvailable $Name | Where-Object {
-                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$InstallVersion
+                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$InstallVersion -and (!$_.PowerShellVersion -or $_.PowerShellVersion -le $PSVersionTable.PSVersion)
             } | Select-Object -First 1
             if (-not $module) { throw "Instalacao nao disponibilizou $Name $InstallVersion em $sharedModuleRoot." }
         }
@@ -182,7 +187,7 @@ function Ensure-CleanupModule {
             Write-Warning "Dependencia $Name nao carregou: $($_.Exception.Message). Reparando a versao $repairVersion pela PSGallery."
             Install-CleanupModulePackage -Name $Name -Version $repairVersion -Reinstall
             $module = Get-Module -ListAvailable $Name | Where-Object {
-                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$repairVersion
+                $_.ModuleBase.StartsWith("$sharedModuleRoot\", [StringComparison]::OrdinalIgnoreCase) -and $_.Version -eq [version]$repairVersion -and (!$_.PowerShellVersion -or $_.PowerShellVersion -le $PSVersionTable.PSVersion)
             } | Select-Object -First 1
             if (-not $module) { throw "Reparo nao disponibilizou $Name $repairVersion." }
             Test-CleanupModuleImport -Name $Name -Path $module.Path

@@ -68,6 +68,29 @@ Describe 'Preparacao de dependencias' {
         Mock Install-PSResource { throw 'TLS handshake failed' }
         { Ensure-CleanupModule PnP.PowerShell 3.0.0 3.0.0 } | Should -Throw '*SPVC-DEPENDENCY*TLS handshake failed*'
     }
+    It 'atualiza PnP antigo ou incompativel antes do wizard' -ForEach @(
+        @{OldVersion='3.0.0';RequiredPowerShell='7.4.0'},
+        @{OldVersion='3.5.0';RequiredPowerShell='99.0'}
+    ) {
+        $newBase = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.4.1'
+        Mock Get-Module {
+            if ($script:installedModule) {
+                [pscustomobject]@{ModuleBase=$newBase;Path=(Join-Path $newBase 'PnP.PowerShell.psd1');Version=[version]'3.4.1';PowerShellVersion=[version]'7.4.0'}
+            } else {
+                [pscustomobject]@{ModuleBase=$shared;Path=(Join-Path $shared 'PnP.PowerShell.psd1');Version=[version]$OldVersion;PowerShellVersion=[version]$RequiredPowerShell}
+            }
+        }
+        Ensure-PnPModule
+        $script:PnPModulePath | Should -Be (Join-Path $newBase 'PnP.PowerShell.psd1')
+        Should -Invoke Install-PSResource -Times 1 -ParameterFilter { $Name -eq 'PnP.PowerShell' -and $Version -eq '3.4.1' -and $Scope -eq 'AllUsers' }
+        Should -Invoke Test-CleanupModuleImport -Times 1 -ParameterFilter { $Path -eq (Join-Path $newBase 'PnP.PowerShell.psd1') }
+    }
+    It 'revalida requisito PowerShell do pacote instalado antes de importar' {
+        Mock Get-Module { [pscustomobject]@{ModuleBase=$shared;Path=(Join-Path $shared 'PnP.PowerShell.psd1');Version=[version]'3.4.1';PowerShellVersion=[version]'99.0'} }
+        { Ensure-PnPModule } | Should -Throw '*SPVC-DEPENDENCY*'
+        Should -Invoke Install-PSResource -Times 1
+        Should -Invoke Test-CleanupModuleImport -Times 0
+    }
     It 'localiza o PowerShell atual mesmo com PATH sem pwsh' {
         Mock Get-Command { $null } -ParameterFilter { $Name -eq 'pwsh.exe' }
         Find-CleanupPowerShell | Should -Be (Join-Path $PSHOME 'pwsh.exe')
@@ -142,5 +165,31 @@ Describe 'Instalacao anterior e rollback' {
         Restore-CleanupInstallation -Backups @{$target=$backup} -Written @($target) -RollbackRoot $TestDrive -WarningAction SilentlyContinue | Should -BeFalse
         Get-Content $backup | Should -Be 'old'
         Should -Invoke Register-ScheduledTask -Times 0
+    }
+}
+
+Describe 'Ambiente da importacao PnP' {
+    BeforeAll { . (Join-Path $PSScriptRoot '../scripts/Configuration.ps1') }
+    It 'limita descoberta a caminhos locais e restaura o ambiente depois' {
+        $original = $env:PSModulePath
+        $inherited = '\\unavailable.invalid\modules;C:\Users\Other\PowerShell\Modules'
+        $env:PSModulePath = $inherited
+        Mock Import-Module {
+            $script:importEnvironment = $env:PSModulePath
+            $script:globalImport = [bool]$Global
+        }
+        try {
+            Import-CleanupPnPModule -ModulePath 'C:\Program Files\PowerShell\Modules\PnP.PowerShell\3.4.1\PnP.PowerShell.psd1'
+            $script:importEnvironment | Should -Be (@((Join-Path $PSHOME 'Modules'),(Join-Path $env:ProgramFiles 'PowerShell/Modules')) -join [IO.Path]::PathSeparator)
+            $script:globalImport | Should -BeTrue
+            $env:PSModulePath | Should -Be $inherited
+            Should -Invoke Import-Module -Times 1 -ParameterFilter { $MinimumVersion -eq [version]'3.4.1' -and ([version]$MaximumVersion).Major -eq 3 }
+        } finally { $env:PSModulePath = $original }
+    }
+    It 'restaura o ambiente e preserva a falha de importacao' {
+        $original = $env:PSModulePath
+        Mock Import-Module { throw 'DLL bloqueada' }
+        { Import-CleanupPnPModule } | Should -Throw '*DLL bloqueada*'
+        $env:PSModulePath | Should -Be $original
     }
 }

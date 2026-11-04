@@ -171,3 +171,11 @@ Em falha, procure o caminho exibido como **Diagnostico LOCAL SERVICE preservado 
 | libraries / folder | Permissões do aplicativo no site e existência/acesso ao escopo configurado; verificar também rede e throttling. |
 
 O instalador não ignora essa validação. Resultado ausente, JSON incompleto, identidade diferente ou teste apenas local não autorizam a conclusão. Não recrie aplicativo/certificado apenas porque houve timeout: primeiro identifique a etapa registrada.
+
+## v1.4.12: atualizar dependencias antes de continuar
+
+O instalador exige PnP.PowerShell 3.4.1 ou superior da serie 3.x. Se houver somente 3.0.0, uma instalacao de usuario ou uma versao que exija um PowerShell mais novo, instala automaticamente a base 3.4.1 para todos os usuarios pela PSGallery oficial. Versoes anteriores permanecem instaladas, mas nao sao selecionadas para esta aplicacao. O pacote baixado e revalidado quanto ao requisito de PowerShell e importado em processo separado; uma importacao defeituosa permite um reparo e novo teste.
+
+O bootstrap ja prepara PowerShell 7.4.6+ quando nao encontra uma instalacao compativel, usando WinGet ou MSI oficial com assinatura validada. O modulo 3.4.1 declara PowerShell 7.4.0 como minimo; esta aplicacao mantem o piso 7.4.6. Uma dependencia que ainda nao carregue impede a continuacao.
+
+A importacao usa somente os caminhos locais de modulos do PowerShell e de Program Files. A alteracao de PSModulePath e temporaria, com restauracao mesmo em falha. O worker LOCAL SERVICE registra a versao do PowerShell, o manifesto e a saida detalhada de Import-Module no diagnostico preservado. Timeout na etapa module nao comprova incompatibilidade: antivírus, AppLocker, acesso a DLLs ou outras condicoes do host ainda podem exigir intervencao administrativa. O instalador nao desativa essas protecoes.

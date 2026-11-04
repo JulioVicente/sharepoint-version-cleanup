@@ -22,14 +22,14 @@ Describe 'Worker de validacao LOCAL SERVICE' {
         $configPath = Join-Path $fixture 'config.json'
         $cfg | ConvertTo-Json -Depth 10 | Set-Content $configPath
         $resultPath = Join-Path $fixture 'result.json'
-        $modulePath = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.0.0/PnP.PowerShell.psd1'
+        $modulePath = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.4.1/PnP.PowerShell.psd1'
         $rsa = [Security.Cryptography.RSA]::Create(2048)
         $request = [Security.Cryptography.X509Certificates.CertificateRequest]::new('CN=SPVC-unit', $rsa, [Security.Cryptography.HashAlgorithmName]::SHA256, [Security.Cryptography.RSASignaturePadding]::Pkcs1)
         $unitCertificate = $request.CreateSelfSigned([DateTimeOffset]::UtcNow.AddMinutes(-1),[DateTimeOffset]::UtcNow.AddDays(1))
         $context = [pscustomobject]@{RequestTimeout=0;Disposed=$false}
         $context | Add-Member ScriptMethod Dispose { $this.Disposed=$true }
         Mock Get-Item { $unitCertificate } -ParameterFilter { $LiteralPath -like 'Cert:*' }
-        Mock Import-Module { [pscustomobject]@{Name='PnP.PowerShell';Version=[version]'3.0.0'} }
+        Mock Import-Module { [pscustomobject]@{Name='PnP.PowerShell';Version=[version]'3.4.1'} }
         Mock Start-Transcript {}
         Mock Stop-Transcript {}
         Mock Connect-PnPOnline { [pscustomobject]@{Context=$context} }
@@ -43,7 +43,7 @@ Describe 'Worker de validacao LOCAL SERVICE' {
         $result.Success | Should -BeTrue
         $result.Scope | Should -Be Full
         $result.Stage | Should -Be completed
-        $result.ModuleVersion | Should -Be '3.0.0'
+        $result.ModuleVersion | Should -Be '3.4.1'
         $context.RequestTimeout | Should -Be 60000
         $context.Disposed | Should -BeTrue
         Should -Invoke Get-PnPFolder -Times 1

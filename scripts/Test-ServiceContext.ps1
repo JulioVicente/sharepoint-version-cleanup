@@ -64,8 +64,9 @@ try {
     $manifest = [IO.Path]::GetFullPath($ModulePath)
     if (-not $manifest.StartsWith("$sharedRoot\",[StringComparison]::OrdinalIgnoreCase) -or
         [IO.Path]::GetFileName($manifest) -ne 'PnP.PowerShell.psd1') { throw 'PnP deve estar instalado para todos os usuarios em Program Files.' }
+    Write-Host "[SPVC-MODULE] PowerShell $($PSVersionTable.PSVersion); minimo PnP 3.4.1; manifesto $manifest"
     $env:PNPPOWERSHELL_UPDATECHECK = 'false'
-    $module = Import-Module -Name $manifest -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -PassThru -ErrorAction Stop |
+    $module = Import-CleanupPnPModule -ModulePath $manifest -PassThru -TraceImport |
         Where-Object Name -EQ 'PnP.PowerShell' | Select-Object -First 1
     if (-not $module) { throw 'Importacao nao retornou o modulo PnP.PowerShell.' }
     $result.ModulePath = $manifest

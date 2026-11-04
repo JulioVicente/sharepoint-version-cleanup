@@ -161,3 +161,15 @@ function Get-CleanupLibraries {
     }
     return $libraries
 }
+
+function Import-CleanupPnPModule {
+    [CmdletBinding()]
+    param([string]$ModulePath = 'PnP.PowerShell', [switch]$PassThru, [switch]$TraceImport)
+    # Restrict module discovery only for this import, not for other programs or
+    # future PowerShell sessions. The service must not scan user/UNC module paths.
+    $originalModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = @((Join-Path $PSHOME 'Modules'),(Join-Path $env:ProgramFiles 'PowerShell/Modules')) -join [IO.Path]::PathSeparator
+        Import-Module -Name $ModulePath -MinimumVersion 3.4.1 -MaximumVersion 3.9999.9999 -Global -PassThru:$PassThru -Verbose:$TraceImport -ErrorAction Stop
+    } finally { $env:PSModulePath = $originalModulePath }
+}

@@ -299,3 +299,5 @@ O assistente sugere `<InstallPath>\audit-copy` para a cópia de auditoria (norma
 ## Módulo validado na instalação
 
 O instalador preenche `PnPModulePath` com o caminho absoluto do manifesto PnP.PowerShell 3.x que foi importado e testado. A validação LOCAL SERVICE, a limpeza e o envio de email usam essa mesma instalação, evitando diferenças de PSModulePath entre contas. Configurações antigas sem esse campo continuam usando descoberta por nome. Se essa versão for removida ou corrompida, execute novamente o instalador para reparar/selecionar uma instalação compatível; não aponte o campo para um módulo de outro usuário.
+
+A partir da v1.4.12, o piso do modulo e 3.4.1, ainda restrito a serie 3.x. Execute o bootstrap atualizado para migrar automaticamente configuracoes que apontam para a versao 3.0.0. A versao 4.x nao e selecionada automaticamente.

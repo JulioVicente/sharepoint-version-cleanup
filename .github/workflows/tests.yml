@@ -34,8 +34,8 @@ jobs:
       - name: Verify production worker with real PnP and LOCAL SERVICE
         shell: pwsh
         run: |
-          Install-PSResource PnP.PowerShell -Version 3.0.0 -Scope AllUsers -TrustRepository -Quiet
-          $manifest = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.0.0/PnP.PowerShell.psd1'
+          Install-PSResource PnP.PowerShell -Version 3.4.1 -Scope AllUsers -TrustRepository -Quiet
+          $manifest = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.4.1/PnP.PowerShell.psd1'
           ./tests/Test-ServiceContextIntegration.ps1 -ModulePath $manifest
       - name: Verify uninstall archive and Windows ACLs
         shell: pwsh

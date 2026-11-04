@@ -9,7 +9,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-. (Join-Path $PSScriptRoot 'Formatting.ps1')
+. (Join-Path $PSScriptRoot 'Configuration.ps1')
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 if (-not $config.Email.Enabled) { return }
 
@@ -91,7 +91,7 @@ $payload = @{ message = $message; saveToSentItems = $true } | ConvertTo-Json -De
 try {
     $moduleName = if ($config.PSObject.Properties['PnPModulePath'] -and $config.PnPModulePath) { $config.PnPModulePath } else { 'PnP.PowerShell' }
     $env:PNPPOWERSHELL_UPDATECHECK = 'false'
-    Import-Module -Name $moduleName -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -ErrorAction Stop
+    Import-CleanupPnPModule -ModulePath $moduleName
     $connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
         -ClientId $config.Authentication.ClientId -Thumbprint $config.Authentication.CertificateThumbprint `
         -ReturnConnection -ErrorAction Stop

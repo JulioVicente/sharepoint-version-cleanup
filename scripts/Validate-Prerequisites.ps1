@@ -13,14 +13,14 @@ if ($windows) {
 }
 $results.Add([pscustomobject]@{ Check = 'Administrador (instalacao)'; Passed = $admin; Detail = 'Abra PowerShell como Administrador para instalar; a tarefa definitiva usa LOCAL SERVICE.' })
 $results.Add([pscustomobject]@{ Check = 'FullLanguage'; Passed = $ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage'; Detail = 'Se bloqueado por politica corporativa, solicite liberacao ao administrador; nao altere politicas automaticamente.' })
-$module = Get-Module -ListAvailable PnP.PowerShell | Where-Object { $_.Version.Major -eq 3 -and $_.PowerShellVersion -le $PSVersionTable.PSVersion } | Sort-Object Version -Descending | Select-Object -First 1
+$module = Get-Module -ListAvailable PnP.PowerShell | Where-Object { $_.Version.Major -eq 3 -and $_.Version -ge [version]'3.4.1' -and $_.PowerShellVersion -le $PSVersionTable.PSVersion } | Sort-Object Version -Descending | Select-Object -First 1
 $moduleReady = $false
 $moduleDetail = 'Execute bootstrap.ps1 para instalar PnP.PowerShell compativel para todos os usuarios.'
 if ($module) {
     try { Import-Module $module.Path -ErrorAction Stop; $moduleReady = $true; $moduleDetail = "Importado: $($module.Path). O teste LOCAL SERVICE confirmara acesso sob a identidade agendada." }
     catch { $moduleDetail = "Modulo encontrado mas nao importavel: $($_.Exception.Message). Execute bootstrap.ps1 em um novo processo." }
 }
-$results.Add([pscustomobject]@{ Check = 'PnP.PowerShell 3.x importavel'; Passed = $moduleReady; Detail = $moduleDetail })
+$results.Add([pscustomobject]@{ Check = 'PnP.PowerShell 3.4.1+ (3.x) importavel'; Passed = $moduleReady; Detail = $moduleDetail })
 if (-not $SkipNetworkCheck) {
     $network = $false
     try {
