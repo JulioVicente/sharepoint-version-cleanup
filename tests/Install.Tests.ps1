@@ -17,7 +17,7 @@ Describe 'Parametros da simulacao e do piloto no wizard' {
         # Optional fixture parameters ensure a regression fails assertions instead of prompting.
         @'
 [CmdletBinding()]
-param([string]$ConfigPath,[string]$SiteUrl,[string]$FolderServerRelativeUrl,[switch]$PassThru,[switch]$Apply)
+param([string]$ConfigPath,[string]$SiteUrl,[string]$FolderServerRelativeUrl,[switch]$PassThru,[switch]$Apply,[int]$SimulationFileLimit)
 $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScriptRoot 'calls.jsonl')
 [pscustomobject]@{
     Success=$true; Apply=[bool]$Apply; VersionsEligible=1; VersionsDeleted=[int][bool]$Apply; FilesSkipped=0
@@ -27,7 +27,28 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
 '@ | Set-Content (Join-Path $scriptDirectory 'cleanup-versions.ps1')
         $site = 'https://contoso.sharepoint.com/sites/piloto'
         Mock Read-CleanupConfiguration { @{Sites=@($site);FolderScopes=@{$site='/sites/piloto/teste03'};VersionsToKeep=10} }
+        Mock Read-YesNo { param($Prompt) $Prompt -notlike 'Limitar a simulacao*' }
+    }
+    It 'permite pular todos os sites sem executar limpeza nem pedir aprovacao do piloto' {
+        $other = 'https://contoso.sharepoint.com/sites/outro'
+        Mock Read-CleanupConfiguration { @{Sites=@($site,$other);FolderScopes=@{$site='';$other=''};VersionsToKeep=10} }
+        Mock Read-YesNo { $false }
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $approved.Count | Should -Be 0
+        Test-Path $callLog | Should -BeFalse
+        Should -Invoke Read-YesNo -Times 2 -Exactly -ParameterFilter { $Prompt -eq 'Executar a simulacao agora?' }
+        Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Aprova excluir*' }
+    }
+    It 'executa somente a amostra de dez e continua sem aplicar ou aprovar producao' {
         Mock Read-YesNo { $true }
+        $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
+        $calls = @(Get-Content $callLog | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
+        $calls.Count | Should -Be 1
+        $calls[0].SimulationFileLimit | Should -Be 10
+        $calls[0].ContainsKey('Apply') | Should -BeFalse
+        $calls[0].FolderServerRelativeUrl | Should -Be '/sites/piloto/teste03'
+        $approved.Count | Should -Be 0
+        Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Aprova excluir*' -or $Prompt -like 'Piloto aprovado*' }
     }
     It 'passa ConfigPath site pasta e PassThru nas duas chamadas e Apply so no piloto' {
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
@@ -62,7 +83,7 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $fixture = $fixture.Replace('Success=$true;', "Status=`$(if (`$Apply) { 'Deferred' } else { 'Completed' }); LimitReached=[bool]`$Apply; Success=(-not `$Apply);")
         $fixture = $fixture.Replace('FilesProcessed=1;', 'FilesProcessed=0;')
         Set-Content -LiteralPath $fixturePath -Value $fixture
-        Mock Read-YesNo { param($Prompt) if ($Prompt -like 'Piloto aprovado*') { return $Approve }; $true }
+        Mock Read-YesNo { param($Prompt) if ($Prompt -like 'Limitar a simulacao*') { return $false }; if ($Prompt -like 'Piloto aprovado*') { return $Approve }; $true }
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
         $approved.Count | Should -Be ([int]$Approve)
         Should -Invoke Read-YesNo -Times 1 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }

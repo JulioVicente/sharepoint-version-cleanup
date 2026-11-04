@@ -28,7 +28,7 @@ O instalador copia scripts, template, exemplo JSON e documentação operacional.
 
 ## Fluxo e aprovações
 
-O wizard valida dados, registra/reutiliza aplicativo, grava configuracao, valida certificado e executa simulacao real do escopo. Solicita aprovacao antes do piloto aplicado e novamente para agendar exclusoes. As tarefas usam LOCAL SERVICE, sem senha pessoal e sem elevacao. Antes do piloto, uma tarefa temporaria verifica certificado, modulo PnP, pastas e leitura SharePoint sob essa identidade. Escopos sem aprovacao continuam em simulacao.
+O wizard valida dados, registra/reutiliza aplicativo, grava configuracao, valida certificado e oferece simulacao opcional: pular, amostra de ate 10 arquivos por site (padrao) ou escopo completo. Pular nao causa rollback. A amostra e identificada no relatorio e nao altera o progresso de uma simulacao completa. Solicita aprovacao antes do piloto aplicado e novamente para agendar exclusoes. As tarefas usam LOCAL SERVICE, sem senha pessoal e sem elevacao. Antes do piloto, uma tarefa temporaria verifica certificado, modulo PnP, pastas e leitura SharePoint sob essa identidade. Escopos sem aprovacao continuam em simulacao.
 
 A operação agendada é uma tarefa do Windows, não um serviço residente. Há uma tarefa por site, diária ou semanal, com limite de 12 horas e bloqueio de múltiplas instâncias. O lock adicional é por site e diretório de estado. Consulte a [referência do JSON](CONFIGURATION.md) para detalhes de incremental e retomada.
 

@@ -20,8 +20,8 @@ O arquivo [sharepoint-version-cleanup-v1.4.12.ps1](https://github.com/JulioVicen
 
 1. Verifica Windows, administrador, PowerShell e PnP.PowerShell.
 2. Solicita sites, identifica o tenant pela URL e autentica no Microsoft 365. Localiza aplicativo/certificado automaticamente; configura escopo, retenção, email Graph, auditoria e horário.
-3. Executa uma simulação e mostra arquivos, versões elegíveis e espaço estimado.
-4. Solicita aprovação para aplicar o piloto; mostra o resultado real.
+3. Permite pular a simulação ou analisar até 10 arquivos por site (opção padrão). Também permite simular o escopo completo e mostra arquivos, versões elegíveis e espaço estimado.
+4. Após uma simulação completa, solicita aprovação para aplicar o piloto; mostra o resultado real. Ao pular ou escolher a amostra, conclui a instalação com agendamento em simulação.
 5. Solicita aprovação para agendar o escopo em produção. Escopos não aprovados ficam em simulação.
 
 O acesso administrativo, consentimentos e políticas do tenant precisam permitir o registro e as operações. O assistente valida os dados e a execução, mas não contorna permissões ou retenção.

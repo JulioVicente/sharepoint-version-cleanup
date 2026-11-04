@@ -892,7 +892,12 @@ function Invoke-SetupValidation {
         if ($config.FolderScopes[$site]) { $cleanupArguments.FolderServerRelativeUrl = $config.FolderScopes[$site] }
         Write-Host "Site: $site | Pasta: $($config.FolderScopes[$site]) | Historico mantido: $($config.VersionsToKeep)"
         if (-not (Read-YesNo 'Executar a simulacao agora?' -Default $true)) {
-            throw 'A simulacao e obrigatoria antes de agendar. A instalacao sera revertida.'
+            Write-Host 'Simulacao pulada. A instalacao continuara com este escopo agendado em simulacao.'
+            continue
+        }
+        if (Read-YesNo 'Limitar a simulacao a ate 10 arquivos neste site? N analisa o escopo completo' -Default $true) {
+            $cleanupArguments.SimulationFileLimit = 10
+            Write-Host 'Amostra de ate 10 arquivos no total deste site. O resultado representa somente a amostra; o agendamento continuara em simulacao.'
         }
         while ($true) {
             try {
@@ -919,6 +924,10 @@ function Invoke-SetupValidation {
             Write-Host 'Instalacao continuara com agendamento em simulacao. Pendencias e motivos estao no relatorio; producao exige validacao e aprovacao posteriores.' -ForegroundColor Yellow
             continue
         }
+        if ($cleanupArguments.ContainsKey('SimulationFileLimit')) {
+            Write-Host 'Amostra concluida. A instalacao continuara com agendamento em simulacao para o escopo configurado.'
+            continue
+        }
         Write-Step '4 de 5 - Aprovar o piloto'
         if ($report.Success -and $report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
             (Read-YesNo 'Aprova excluir as versoes antigas neste escopo para validar o piloto? A exclusao e permanente')) {
@@ -943,6 +952,9 @@ function Invoke-SetupValidation {
 
 function Show-CleanupSummary {
     param($Report)
+    if ($Report.PSObject.Properties['SimulationFileLimit'] -and $Report.SimulationFileLimit -gt 0) {
+        Write-Host "AMOSTRA: ate $($Report.SimulationFileLimit) arquivos; totais referentes somente a amostra, sem extrapolacao para o site."
+    }
     Write-Host "Arquivos concluidos: $($Report.FilesProcessed); sem alteracao: $($Report.FilesUnchanged); ignorados: $($Report.FilesSkipped)"
     if ($Report.PSObject.Properties['FilesResumed'] -and $Report.FilesResumed) {
         Write-Host "Analises reaproveitadas da simulacao interrompida: $($Report.FilesResumed) (incluidas nos totais)"

@@ -14,11 +14,13 @@ param(
     [Parameter(ParameterSetName = 'Direct')][ValidateRange(0,36500)][int]$MinimumVersionAgeDays = 30,
     [Parameter(ParameterSetName = 'Direct')][ValidateRange(0,1000)][int]$SamplesPerLibrary = 1,
     [Parameter(ParameterSetName = 'Direct')][string]$OutputDirectory = (Join-Path (Get-Location) '.spvc'),
+    [ValidateRange(0,1000000)][int]$SimulationFileLimit = 0,
     [switch]$PassThru
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($Apply -and $SimulationFileLimit -gt 0) { throw 'SimulationFileLimit permite somente simulacao; nao pode ser combinado com Apply.' }
 $startedAt = Get-Date
 . (Join-Path $PSScriptRoot 'Configuration.ps1')
 . (Join-Path $PSScriptRoot 'Resilience.ps1')
@@ -50,6 +52,11 @@ $logPath = Join-Path $config.Paths.Logs "cleanup-$siteKey-$runId.log"
 $mode = if ($Apply) { 'apply' } else { 'simulation' }
 $scopeKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($scopeFolder.ToLowerInvariant()))).Substring(0, 8)
 $checkpointPath = Join-Path $config.Paths.State "checkpoint-$siteKey-$mode-$scopeKey.json"
+if ($SimulationFileLimit -gt 0) {
+    # A sample neither consumes nor replaces full-scope progress. Each sample is
+    # fresh, so cached results cannot outlive a later applied run.
+    $checkpointPath = Join-Path $config.Paths.State "checkpoint-$siteKey-sample-$runId.json"
+}
 $inventoryPath = Join-Path $config.Paths.State "inventory-$siteKey-$scopeKey.json"
 $policyKey = "$($config.VersionsToKeep)|$($config.Safety.MinimumVersionAgeDays)"
 $ageCutoff = $startedAt.ToUniversalTime().AddDays(-$config.Safety.MinimumVersionAgeDays)
@@ -71,7 +78,10 @@ $report = [ordered]@{
     FilesFailed = 0; LibrariesFailed = 0; Errors = [Collections.Generic.List[string]]::new()
     SamplesInspected = 0; SampleDiscrepancies = 0; SamplesFailed = 0
     LimitReached = $false; AuditBackupError = $null; PolicyKey = $policyKey; MaxVersionsPerRun = $config.Safety.MaxVersionsPerRun
-    Diagnostic = $null
+    Diagnostic = $null; SimulationFileLimit = $SimulationFileLimit; FilesInspected = 0
+}
+if ($SimulationFileLimit -gt 0) {
+    $report.Warnings.Add("AMOSTRA: ate $SimulationFileLimit arquivos por site. Os totais representam somente a amostra, sem extrapolacao para o escopo completo.")
 }
 
 function Write-AuditEvent {
@@ -209,6 +219,7 @@ try {
     $libraries = Invoke-PnPRequest { Get-CleanupLibraries -SiteUrl $SiteUrl -FolderServerRelativeUrl $scopeFolder -Connection $connection }
 
     :libraryLoop foreach ($library in $libraries) {
+        if ($SimulationFileLimit -gt 0 -and $report.FilesInspected -ge $SimulationFileLimit) { break }
         try {
         $libraryRoot = if ($library.PSObject.Properties.Name -contains 'RootFolder') { [string]$library.RootFolder.ServerRelativeUrl } else { '' }
         if ($scopeFolder -and $libraryRoot -and $scopeFolder -ne $libraryRoot -and
@@ -224,7 +235,18 @@ try {
             Fields = @('FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size')
         }
         if ($scopeFolder) { $listParameters.FolderServerRelativeUrl = $scopeFolder }
-        $items = @(Invoke-PnPRequest { Get-PnPListItem @listParameters } -Activity 'Lendo itens da biblioteca (paginas de 500)...')
+        $listActivity = 'Lendo itens da biblioteca (paginas de 500)...'
+        if ($SimulationFileLimit -gt 0) {
+            $remaining = $SimulationFileLimit - $report.FilesInspected
+            $viewFields = ($listParameters.Fields | ForEach-Object { "<FieldRef Name='$_'/>" }) -join ''
+            # Query and Fields are different PnP parameter sets. Omitting PageSize
+            # prevents PnP from following pages beyond this server-side RowLimit.
+            $listParameters.Remove('Fields')
+            $listParameters.Remove('PageSize')
+            $listParameters.Query = "<View Scope='RecursiveAll'><Query><Where><Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq></Where><OrderBy><FieldRef Name='ID' Ascending='TRUE'/></OrderBy></Query><ViewFields>$viewFields</ViewFields><RowLimit Paged='FALSE'>$remaining</RowLimit></View>"
+            $listActivity = "Lendo amostra de ate $remaining arquivos da biblioteca..."
+        }
+        $items = @(Invoke-PnPRequest { Get-PnPListItem @listParameters } -Activity $listActivity)
         $fileCount = @($items | Where-Object { [int]$_['FSObjType'] -eq 0 -and (-not $scopeFolder -or ([string]$_['FileRef']).StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) }).Count
         $fileIndex = 0
         Write-Host "Itens recebidos: $($items.Count) | Arquivos no escopo: $fileCount"
@@ -234,6 +256,8 @@ try {
             $directory = if ([int]$item['FSObjType'] -ne 0) { $fileUrl } else { $fileUrl.Substring(0, $fileUrl.LastIndexOf('/')) }
             if ($scannedDirectories.Add($directory)) { Write-AuditEvent -Event 'DirectoryScanned' -Outcome 'Success' -FileUrl $directory }
             if ([int]$item['FSObjType'] -ne 0) { continue }
+            if ($SimulationFileLimit -gt 0 -and $report.FilesInspected -ge $SimulationFileLimit) { break libraryLoop }
+            $report.FilesInspected++
             $fileIndex++
             if (-not $Apply -and $simulationResults.Count) { Write-Host "Conferindo arquivo $fileIndex de $fileCount : $fileUrl" }
             else { Write-Host "Arquivo $fileIndex de $fileCount : $fileUrl" }
@@ -461,7 +485,8 @@ try {
     try {
     Write-AuditEvent -Event 'RunCompleted' -Outcome $(if ($report.Success) { 'Success' } elseif ($report.Status -in 'Deferred','Partial') { $report.Status } else { 'Failed' }) -ErrorMessage $report.Error `
         -Details @{ FilesProcessed = $report.FilesProcessed; FilesUnchanged = $report.FilesUnchanged; FilesResumed = $report.FilesResumed; FilesSkipped = $report.FilesSkipped
-            VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted; Status = $report.Status; LimitReached = $report.LimitReached }
+            VersionsEligible = $report.VersionsEligible; VersionsDeleted = $report.VersionsDeleted; Status = $report.Status; LimitReached = $report.LimitReached
+            SimulationFileLimit = $SimulationFileLimit; FilesInspected = $report.FilesInspected }
     if ($config.Audit.CopyDirectory) {
         try {
             New-Item -ItemType Directory -Path $config.Audit.CopyDirectory -Force | Out-Null
@@ -491,6 +516,7 @@ try {
 }
 
 if (-not $Apply) {
+    if ($SimulationFileLimit -gt 0) { Write-Warning "AMOSTRA: $($report.FilesInspected) arquivo(s) inspecionado(s), limite $SimulationFileLimit. Os totais nao representam o site completo." }
     if ($report.Status -eq 'Partial') { Write-Warning 'Simulacao parcial. Nenhuma versao foi removida; consulte as pendencias no relatorio.' }
     else { Write-Warning 'Simulacao concluida. Nenhuma versao foi removida. Use -Apply para efetivar.' }
 }

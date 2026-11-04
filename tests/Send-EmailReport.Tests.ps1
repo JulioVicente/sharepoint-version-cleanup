@@ -17,6 +17,22 @@ Describe 'Send-EmailReport.ps1' {
         'STATUS','COLOR','SITE','MODE','FILES','DELETED','FREED','SKIPPED','WARNINGS','ERROR','FINISHED' |
             ForEach-Object { $template | Should -Match ([regex]::Escape("{{$_}}")) }
     }
+    It 'identifica no email que os totais sao de uma amostra de dez arquivos' {
+        $cfg = Join-Path $TestDrive 'sample-email.json'
+        @{Email=@{Enabled=$true}} | ConvertTo-Json | Set-Content $cfg
+        $report = Join-Path $TestDrive 'sample-report.json'
+        @{Success=$true;Status='Completed';SimulationFileLimit=10;SiteUrl='https://contoso.sharepoint.com';Apply=$false;
+          FilesProcessed=10;FilesUnchanged=0;FilesSkipped=0;FolderServerRelativeUrl='/docs';
+          VersionsEligible=2;VersionsDeleted=0;BytesEligible=20;BytesFreed=0;
+          Warnings=@('Totais somente da amostra.');Error=$null;LogPath='';FinishedAt=(Get-Date)} |
+            ConvertTo-Json | Set-Content $report
+        $preview = Join-Path $TestDrive 'sample.html'
+        & $emailScript -ConfigPath $cfg -ReportPath $report -PreviewPath $preview
+        $html = Get-Content $preview -Raw
+        $html | Should -Match 'AMOSTRA - SUCESSO'
+        $html | Should -Match 'Simulacao de ate 10 arquivos'
+        $html | Should -Match 'Totais somente da amostra'
+    }
     It 'renderiza relatorio com escape HTML e sem marcadores pendentes' {
         $cfg = Join-Path $TestDrive 'email.json'
         @{ Email = @{ Enabled = $true } } | ConvertTo-Json | Set-Content $cfg

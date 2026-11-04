@@ -23,7 +23,7 @@ Describe 'cleanup-versions.ps1' {
         # Declara os comandos para que esta suite rode mesmo sem PnP.PowerShell instalado.
         function global:Connect-PnPOnline { param($Url,$ClientId,$Tenant,$Thumbprint,[switch]$ReturnConnection) }
         function global:Get-PnPList { param($Connection,$Includes,$Identity,[switch]$ThrowExceptionIfListNotFound) }
-        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection,$FolderServerRelativeUrl) }
+        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection,$FolderServerRelativeUrl,$Query) }
         function global:Get-PnPFolder { param($Url,$Connection) }
         function global:Get-PnPFile { param($Url,[switch]$AsFileObject,$Connection) }
         function global:Get-PnPProperty { param($ClientObject,$Property,$Connection) }
@@ -58,6 +58,72 @@ Describe 'cleanup-versions.ps1' {
         }
     }
 
+    It 'limita a amostra a dez no total de varias bibliotecas e limita a consulta no servidor' {
+        Mock Get-PnPList { 'a','b','c' | ForEach-Object { [pscustomobject]@{Id=$_;Title=$_;BaseTemplate=101;Hidden=$false;IsCatalog=$false} } }
+        Mock Get-PnPListItem { param($List) 1..6 | ForEach-Object { @{FSObjType=0;FileRef="/docs/$List-$_.docx"} } }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
+        $r.Success | Should -BeTrue
+        $r.SimulationFileLimit | Should -Be 10
+        $r.FilesInspected | Should -Be 10
+        $r.FilesProcessed | Should -Be 10
+        $r.VersionsEligible | Should -Be 20
+        $r.Warnings -join ' ' | Should -Match 'AMOSTRA'
+        Should -Invoke Get-PnPFileVersion -Times 10 -Exactly
+        Should -Invoke Get-PnPListItem -Times 2 -Exactly
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter {
+            $List -eq 'a' -and ([xml]$Query).View.RowLimit.InnerText -eq '10' -and
+            ([xml]$Query).View.RowLimit.Paged -eq 'FALSE' -and -not $PageSize -and -not $Fields
+        }
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter { $List -eq 'b' -and ([xml]$Query).View.RowLimit.InnerText -eq '4' }
+        Should -Invoke Get-PnPListItem -Times 0 -ParameterFilter { $List -eq 'c' }
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+    It 'amostra respeita pasta e conta arquivos protegidos dentro do teto' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.FolderScopes = @{'https://contoso.sharepoint.com/sites/test'='/sites/test/docs/piloto'}
+        $cfg | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        Mock Get-PnPListItem {
+            @{FSObjType=0;FileRef='/sites/test/docs/fora.docx'}
+            @{FSObjType=1;FileRef='/sites/test/docs/piloto/pasta'}
+            1..15 | ForEach-Object { @{FSObjType=0;FileRef="/sites/test/docs/piloto/$_.docx";_ComplianceTag='Protected'} }
+        }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
+        $r.FilesInspected | Should -Be 10
+        $r.FilesSkipped | Should -Be 10
+        $r.FilesProcessed | Should -Be 0
+        Should -Invoke Get-PnPFileVersion -Times 0
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter { $FolderServerRelativeUrl -eq '/sites/test/docs/piloto' -and ([xml]$Query).View.Scope -eq 'RecursiveAll' }
+    }
+    It 'amostra com menos de dez preserva checkpoint completo e nao reutiliza estado de outra amostra' {
+        $null = New-Item -ItemType Directory -Path $state -Force
+        $siteUrl = 'https://contoso.sharepoint.com/sites/test'
+        $key = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($siteUrl))).Substring(0,16)
+        $full = Join-Path $state "checkpoint-$key-simulation-E3B0C442.json"
+        'estado completo preservado' | Set-Content $full
+        $before = (Get-FileHash $full).Hash
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl $siteUrl -SimulationFileLimit 10 -PassThru
+        $r.FilesProcessed | Should -Be 1
+        $r.Success | Should -BeTrue
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl $siteUrl -SimulationFileLimit 10 -PassThru
+        (Get-FileHash $full).Hash | Should -Be $before
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly
+        @(Get-ChildItem $state -Filter '*sample*.json').Count | Should -Be 0
+    }
+    It 'amostra continua identificada como parcial quando um arquivo falha' {
+        Mock Get-PnPFileVersion { throw 'falha de leitura' }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
+        $r.Status | Should -Be 'Partial'
+        $r.SimulationFileLimit | Should -Be 10
+        $r.FilesInspected | Should -Be 1
+        $r.FilesFailed | Should -Be 1
+        @(Get-ChildItem $state -Filter '*sample*.json').Count | Should -Be 1
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+    It 'recusa Apply junto com limite de simulacao antes de conectar' {
+        { & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -Apply } | Should -Throw '*somente simulacao*'
+        Should -Invoke Connect-PnPOnline -Times 0
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
     It 'usa o manifesto validado pelo instalador em vez da descoberta por nome' {
         $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
         $cfg.PnPModulePath = 'C:\Program Files\PowerShell\Modules\PnP.PowerShell\3.0.0\PnP.PowerShell.psd1'

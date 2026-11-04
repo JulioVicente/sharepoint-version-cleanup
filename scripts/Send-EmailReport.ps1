@@ -29,7 +29,9 @@ $templatePath = Join-Path (Split-Path -Parent (Split-Path -Parent $PSCommandPath
 $template = Get-Content -LiteralPath $templatePath -Raw
 $deferred = $report.PSObject.Properties['Status'] -and $report.Status -eq 'Deferred'
 $partial = $report.PSObject.Properties['Status'] -and $report.Status -eq 'Partial'
+$isSample = $report.PSObject.Properties['SimulationFileLimit'] -and $report.SimulationFileLimit -gt 0
 $status = if ($partial) { 'PARCIAL - COM PENDENCIAS' } elseif ($deferred) { 'PAUSADO PELO LIMITE' } elseif ($report.Success) { 'SUCESSO' } else { 'ERRO' }
+if ($isSample) { $status = "AMOSTRA - $status" }
 $color = if ($deferred -or $partial) { '#986000' } elseif ($report.Success) { '#16803c' } else { '#c62828' }
 $warningText = if (@($report.Warnings).Count) {
     [Net.WebUtility]::HtmlEncode((@($report.Warnings) -join "`n"))
@@ -42,7 +44,7 @@ $values = @{
     RESUMED = $(if ($report.PSObject.Properties['FilesResumed']) { [string]$report.FilesResumed } else { '0' })
     ELIGIBLE = [string]$report.VersionsEligible
     ESTIMATED = (Format-CleanupSize -Bytes $report.BytesEligible)
-    MODE = $(if ($report.Apply) { 'Aplicacao' } else { 'Simulacao' })
+    MODE = $(if ($isSample) { "Simulacao de ate $($report.SimulationFileLimit) arquivos" } elseif ($report.Apply) { 'Aplicacao' } else { 'Simulacao' })
     FILES = [string]$report.FilesProcessed; DELETED = [string]$report.VersionsDeleted
     FREED = (Format-CleanupSize -Bytes $report.BytesFreed)
     SKIPPED = [string]$report.FilesSkipped; WARNINGS = $warningText
