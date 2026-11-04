@@ -151,3 +151,23 @@ Um timeout que se recupera nas tentativas seguintes nao e uma falha final: o rel
 O erro `configured HttpClient.Timeout of 100 seconds elapsing` agora e reconhecido mesmo quando o PnP perde o tipo original da excecao ao produzir um erro PowerShell. A politica configurada controla quantas vezes repetir e a espera entre chamadas; nao altera o timeout HTTP por chamada.
 
 Se as tentativas se esgotarem em um arquivo, a varredura segue nos demais e retorna Status=Partial com relatorio e checkpoint. No wizard, responder N a `Simulacao parcial. Tentar os pendentes novamente agora?` conclui a instalacao com agendamento em simulacao. Responder S retoma imediatamente usando as analises validas. A producao nao e promovida por um resultado parcial. A CLI retorna 2 para parcial, 3 para lote pausado pelo limite e 0 para conclusao normal. Falhas que impedem conectar inicialmente ou gravar estado/relatorio continuam bloqueando a instalacao.
+
+## LOCAL SERVICE: Running / 0x00041301 e tempo limite
+
+O código 0x00041301 indica que a tarefa ainda está em execução; não identifica a operação bloqueada. Uma ACL de chave validada não comprova conectividade com Microsoft 365.
+
+A partir da v1.4.11, o teste publica as etapas startup, configuration, certificate, storage, module, connect, libraries e folder antes de cada operação. Cada etapa tem limite de 180 segundos, e o limite total considera a quantidade de sites (até 24 horas). O prazo não é renovado pela releitura do mesmo marcador de progresso. A leitura CSOM usa timeout de 60 segundos; o supervisor também limita conexões e retries internos do PnP.
+
+Em falha, procure o caminho exibido como **Diagnostico LOCAL SERVICE preservado em**: `%TEMP%/SPVC-ServiceTest-<id>-diagnostic.log`, no perfil do administrador que executou o instalador. Ele reúne erro, último progresso, resultado disponível e últimas 200 linhas do transcript. É preservado mesmo quando o instalador reverte seus arquivos. Nenhuma chave privada ou token é gravado deliberadamente; URLs e caminhos do ambiente aparecem no diagnóstico.
+
+| Última etapa | Verificação recomendada |
+|---|---|
+| startup | PowerShell, acesso aos scripts/estado e log Microsoft-Windows-TaskScheduler/Operational; políticas corporativas podem impedir a inicialização. |
+| configuration | JSON válido e scripts completos, legíveis por LOCAL SERVICE. |
+| certificate | Certificado válido em LocalMachine/My e permissão de leitura da chave RSA; a etapa testa assinatura SHA256. |
+| storage | Espaço e escrita nas pastas de estado, logs e cópia de auditoria. |
+| module | Manifesto informado no erro, arquivos/DLLs legíveis e liberação pelo antivírus/AppLocker. |
+| connect | DNS, HTTPS/TLS, proxy da conta LOCAL SERVICE, tenant, aplicativo e certificado. O proxy/login do administrador não prova acesso da conta de serviço. |
+| libraries / folder | Permissões do aplicativo no site e existência/acesso ao escopo configurado; verificar também rede e throttling. |
+
+O instalador não ignora essa validação. Resultado ausente, JSON incompleto, identidade diferente ou teste apenas local não autorizam a conclusão. Não recrie aplicativo/certificado apenas porque houve timeout: primeiro identifique a etapa registrada.

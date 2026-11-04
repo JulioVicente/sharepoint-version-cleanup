@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.10',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.11',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -103,16 +103,21 @@ function Ensure-PnPModule {
 }
 
 function Invoke-CleanupIsolated {
-    param([Parameter(Mandatory)][scriptblock]$Action, [object[]]$ArgumentList = @(), [string]$ModulePath)
+    param([Parameter(Mandatory)][scriptblock]$Action, [object[]]$ArgumentList = @(), [string]$ModulePath,
+        [ValidateRange(0,86400)][int]$TimeoutSeconds = 0)
     # Start-Job uses a separate pwsh process without profiles. Runspaces/ThreadJob
     # share assemblies and cannot isolate the incompatible Graph.Core libraries.
     $job = Start-Job -ScriptBlock {
         param($Code, $Arguments, $Manifest)
         $ErrorActionPreference = 'Stop'
+        $env:PNPPOWERSHELL_UPDATECHECK = 'false'
         if ($Manifest) { Import-Module -Name $Manifest -ErrorAction Stop }
         & ([scriptblock]::Create($Code)) @Arguments
     } -ArgumentList $Action.ToString(), $ArgumentList, $ModulePath
     try {
+        if ($TimeoutSeconds -gt 0 -and -not (Wait-Job -Job $job -Timeout $TimeoutSeconds)) {
+            throw "[SPVC-MODULE-TIMEOUT] Processo isolado excedeu $TimeoutSeconds segundos. Modulo: $ModulePath. Verifique acesso ao modulo, antivirus e politicas corporativas."
+        }
         Receive-Job -Job $job -Wait -ErrorAction Stop
         if ($job.State -ne 'Completed') { throw "Processo isolado terminou em estado $($job.State)." }
     } finally {
@@ -123,7 +128,7 @@ function Invoke-CleanupIsolated {
 
 function Test-CleanupModuleImport {
     param([string]$Name, [string]$Path)
-    $null = Invoke-CleanupIsolated -ModulePath $Path -ArgumentList @($Name, $Path) -Action {
+    $null = Invoke-CleanupIsolated -ModulePath $Path -TimeoutSeconds 180 -ArgumentList @($Name, $Path) -Action {
         param($ModuleName, $ManifestPath)
         if ($ModuleName -eq 'Microsoft.Graph.Authentication') {
             # Graph loads this dependency lazily; validate the shipped DLL explicitly.
@@ -1121,6 +1126,7 @@ try {
     . (Join-Path $InstallPath 'scripts/TaskIdentity.ps1')
     $stage = 'preencher e validar configuracao'
     $configuration = New-Configuration -Destination $InstallPath
+    $configuration.PnPModulePath = $script:PnPModulePath
     $configPath = Join-Path $InstallPath 'config/config.json'
     $configuration | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $configPath -Encoding utf8
     $null = Read-CleanupConfiguration $configPath
@@ -1133,7 +1139,7 @@ try {
     }
     $stage = 'preparar e testar LOCAL SERVICE'
     Initialize-CleanupServiceIdentity -Configuration $configuration -Destination $InstallPath
-    Test-CleanupServiceExecution -Configuration $configuration -Destination $InstallPath
+    Test-CleanupServiceExecution -Configuration $configuration -Destination $InstallPath -ModulePath $script:PnPModulePath
     $stage = 'validar simulacao e piloto'
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
     $stage = 'registrar agendamentos'

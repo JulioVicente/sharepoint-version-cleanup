@@ -3,6 +3,11 @@ BeforeAll {
 }
 
 Describe 'Isolamento real de processos do instalador' {
+    It 'interrompe dependencia bloqueada e remove o processo isolado' {
+        $before = @(Get-Job).Count
+        { Invoke-CleanupIsolated -TimeoutSeconds 1 -Action { Start-Sleep -Seconds 60 } } | Should -Throw '*SPVC-MODULE-TIMEOUT*'
+        @(Get-Job).Count | Should -Be $before
+    }
     It 'nao herda assemblies e preserva parametros e relatorio' {
         Add-Type 'namespace SpvcIsolationTest { public class ParentOnly {} }'
         $report = Invoke-CleanupIsolated -ArgumentList @(@{Scope='/docs';Apply=$false}) -Action {

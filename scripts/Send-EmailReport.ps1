@@ -89,7 +89,9 @@ if (-not $Test -and $report.LogPath -and (Test-Path -LiteralPath $report.LogPath
 }
 $payload = @{ message = $message; saveToSentItems = $true } | ConvertTo-Json -Depth 10
 try {
-    Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -ErrorAction Stop
+    $moduleName = if ($config.PSObject.Properties['PnPModulePath'] -and $config.PnPModulePath) { $config.PnPModulePath } else { 'PnP.PowerShell' }
+    $env:PNPPOWERSHELL_UPDATECHECK = 'false'
+    Import-Module -Name $moduleName -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -ErrorAction Stop
     $connection = Connect-PnPOnline -Url $config.Sites[0] -Tenant $config.Tenant `
         -ClientId $config.Authentication.ClientId -Thumbprint $config.Authentication.CertificateThumbprint `
         -ReturnConnection -ErrorAction Stop

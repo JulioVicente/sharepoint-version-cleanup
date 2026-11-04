@@ -295,3 +295,7 @@ A auditoria registra `SampleSelected` (tamanho, idade, peso, ciclo, quantidade d
 Uma discrepância significa que a conferência encontrou versões elegíveis segundo a política atual em um arquivo considerado inalterado; não é uma comparação byte a byte nem uma prova de corrupção. Registra aviso e invalida o inventário daquele arquivo para reavaliação normal na próxima execução. A amostragem não o exclui nesta execução. Falhas ficam registradas, retornam erro parcial e também deixam o arquivo pendente para reavaliação completa.
 
 O assistente sugere `<InstallPath>\audit-copy` para a cópia de auditoria (normalmente `C:\ProgramData\SharePointVersionCleanup\audit-copy`). Enter aceita; - desabilita. Essa pasta padrão é local; para uma cópia fora do computador, informe um caminho UNC.
+
+## Módulo validado na instalação
+
+O instalador preenche `PnPModulePath` com o caminho absoluto do manifesto PnP.PowerShell 3.x que foi importado e testado. A validação LOCAL SERVICE, a limpeza e o envio de email usam essa mesma instalação, evitando diferenças de PSModulePath entre contas. Configurações antigas sem esse campo continuam usando descoberta por nome. Se essa versão for removida ou corrompida, execute novamente o instalador para reparar/selecionar uma instalação compatível; não aponte o campo para um módulo de outro usuário.

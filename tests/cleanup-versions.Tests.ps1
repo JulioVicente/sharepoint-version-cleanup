@@ -58,6 +58,13 @@ Describe 'cleanup-versions.ps1' {
         }
     }
 
+    It 'usa o manifesto validado pelo instalador em vez da descoberta por nome' {
+        $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
+        $cfg.PnPModulePath = 'C:\Program Files\PowerShell\Modules\PnP.PowerShell\3.0.0\PnP.PowerShell.psd1'
+        $cfg | ConvertTo-Json -Depth 8 | Set-Content $configPath
+        $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        Should -Invoke Import-Module -Times 1 -ParameterFilter { $Name -eq $cfg.PnPModulePath }
+    }
     It 'rejeita JSON de configuracao invalido antes de conectar' {
         $badConfig = Join-Path $TestDrive 'invalid.json'
         '{invalid' | Set-Content -LiteralPath $badConfig

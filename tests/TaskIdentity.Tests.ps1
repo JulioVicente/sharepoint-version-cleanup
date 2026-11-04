@@ -98,7 +98,9 @@ Describe 'Teste sob a identidade de servico' {
         Mock Unregister-ScheduledTask {}
         Mock Test-Path { $true }
         Mock Remove-Item {}
-        Mock Get-Content { '{"Success":true,"Identity":"S-1-5-19","Error":""}' }
+        Mock Get-Content { '{"Scope":"Full","Success":true,"Identity":"S-1-5-19","Error":""}' }
+        Mock Set-Content {}
+        Mock Add-Content {}
     }
     It 'aceita somente o resultado da conta LOCAL SERVICE e remove a tarefa temporaria' {
         Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive
@@ -108,9 +110,39 @@ Describe 'Teste sob a identidade de servico' {
         Should -Invoke New-ScheduledTaskSettingsSet -Times 1 -ParameterFilter { $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $ExecutionTimeLimit.TotalSeconds -eq 210 }
     }
     It 'recusa resultado obtido sob outra identidade e limpa a tarefa' {
-        Mock Get-Content { '{"Success":true,"Identity":"S-1-5-18","Error":"identidade incorreta"}' }
+        Mock Get-Content { '{"Scope":"Full","Success":true,"Identity":"S-1-5-18","Error":"identidade incorreta"}' }
         { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } | Should -Throw '*LOCAL SERVICE falhou*'
         Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+    It 'recusa string false e escopo local como sucesso' -ForEach @(
+        @{Json='{"Success":"false","Identity":"S-1-5-19","Scope":"Full","Error":""}'},
+        @{Json='{"Success":true,"Identity":"S-1-5-19","Scope":"Local","Error":""}'},
+        @{Json='{"Success":true,"Identity":"S-1-5-19","Error":""}'},
+        @{Json='[]'}
+    ) {
+        Mock Get-Content { $Json }
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } | Should -Throw '*LOCAL SERVICE falhou*'
+    }
+    It 'passa o manifesto com espacos entre aspas ao processo LOCAL SERVICE' {
+        Mock New-ScheduledTaskAction { [pscustomobject]@{Arguments=$Argument} }
+        $modulePath = 'C:\Program Files\PowerShell\Modules\PnP.PowerShell\3.0.0\PnP.PowerShell.psd1'
+        Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -ModulePath $modulePath
+        Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter { $Action.Arguments.Contains(' -ModulePath "' + $modulePath + '"') }
+    }
+    It 'dimensiona o limite total para todos os sites' {
+        $cfg.Sites = @('https://a.sharepoint.com','https://b.sharepoint.com')
+        Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive
+        Should -Invoke New-ScheduledTaskSettingsSet -Times 1 -ParameterFilter { $ExecutionTimeLimit.TotalSeconds -eq 2190 }
+    }
+    It 'informa etapa e site quando um comando fica bloqueado' {
+        Mock Test-Path { $LiteralPath -like '*.progress.json' }
+        Mock Get-Content { '{"Sequence":5,"Stage":"connect","Detail":"https://contoso.sharepoint.com"}' }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Running'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=267009;LastRunTime=[datetime]::Now} }
+        Mock Start-Sleep {}
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 30 -StageTimeoutSeconds 1 } |
+            Should -Throw '*Tempo limite*etapa*connect*https://contoso.sharepoint.com*'
+        Should -Invoke Add-Content -Times 1
     }
     It 'preserva erro de acesso da conta de servico e limpa a tarefa' {
         Mock Get-Content { '{"Success":false,"Identity":"S-1-5-19","Error":"acesso negado"}' }

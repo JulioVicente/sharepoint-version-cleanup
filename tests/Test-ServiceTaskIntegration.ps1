@@ -23,8 +23,12 @@ param([string]$ConfigPath,[string]$ResultPath)
 $ErrorActionPreference = 'Stop'
 $mode = (Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json).Mode
 if ($mode -eq 'NoResult') { exit 17 }
+if ($mode -eq 'StageTimeout') {
+    @{Sequence=1;Stage='connect';Detail='https://diagnostic.sharepoint.com'} | ConvertTo-Json | Set-Content -LiteralPath "$ResultPath.progress.json"
+    Start-Sleep -Seconds 60; exit 19
+}
 if ($mode -eq 'Timeout') { Start-Sleep -Seconds 60; exit 18 }
-@{Success=$true;Identity=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;Error=''} |
+@{Scope='Full';Success=$true;Identity=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value;Error=''} |
     ConvertTo-Json | Set-Content -LiteralPath "$ResultPath.tmp" -Encoding utf8
 [IO.File]::Move("$ResultPath.tmp",$ResultPath,$true)
 '@ | Set-Content -LiteralPath (Join-Path $caseRoot 'scripts/Test-ServiceContext.ps1') -Encoding utf8
@@ -35,16 +39,18 @@ if ($mode -eq 'Timeout') { Start-Sleep -Seconds 60; exit 18 }
     $statePath = Join-Path $caseRoot 'state'
     Set-CleanupServiceAcl -Path $statePath -ServiceRights Modify
     $configuration = @{Paths=@{State=$statePath}}
-    foreach ($mode in 'Success','NoResult','Timeout') {
+    foreach ($mode in 'Success','NoResult','Timeout','StageTimeout') {
         @{Mode=$mode} | ConvertTo-Json | Set-Content -LiteralPath $configPath -Encoding utf8
         $timeout = if ($mode -eq 'Timeout') { 3 } else { 45 }
+        $stageTimeout = if ($mode -eq 'StageTimeout') { 15 } else { 45 }
         $expected = switch ($mode) {
+            StageTimeout { '*Tempo limite*etapa*connect*https://diagnostic.sharepoint.com*' }
             NoResult { '*SPVC-SERVICE*terminou sem gravar*0x00000011*Executavel:*pwsh.exe*' }
             Timeout { '*SPVC-SERVICE*Tempo limite*Executavel:*pwsh.exe*' }
             default { $null }
         }
         $failure = $null
-        try { Test-CleanupServiceExecution -Configuration $configuration -Destination $caseRoot -TimeoutSeconds $timeout }
+        try { Test-CleanupServiceExecution -Configuration $configuration -Destination $caseRoot -TimeoutSeconds $timeout -StageTimeoutSeconds $stageTimeout }
         catch { $failure = $_.Exception.Message }
         if ($expected -and ($null -eq $failure -or $failure -notlike $expected)) { throw "Diagnostico inesperado para ${mode}: $failure" }
         if (-not $expected -and $failure) { throw $failure }

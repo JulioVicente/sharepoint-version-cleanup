@@ -130,7 +130,9 @@ try {
     }
     Start-Transcript -LiteralPath $logPath -Append | Out-Null
     $transcriptStarted = $true
-    Import-Module PnP.PowerShell -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999
+    $moduleName = if ($config.ContainsKey('PnPModulePath') -and $config.PnPModulePath) { $config.PnPModulePath } else { 'PnP.PowerShell' }
+    $env:PNPPOWERSHELL_UPDATECHECK = 'false'
+    Import-Module -Name $moduleName -MinimumVersion 3.0.0 -MaximumVersion 3.9999.9999 -ErrorAction Stop
 
     Write-Host "Conectando a $SiteUrl"
     $connection = Invoke-PnPRequest { Connect-PnPOnline -Url $SiteUrl -ClientId $config.Authentication.ClientId `

@@ -217,9 +217,16 @@ function Get-CleanupServiceTaskStatus {
 
 function Test-CleanupServiceExecution {
     param([System.Collections.IDictionary]$Configuration,[string]$Destination,
-        [ValidateRange(1,3600)][int]$TimeoutSeconds = 180)
+        [ValidateRange(1,86400)][int]$TimeoutSeconds = 180,
+        [ValidateRange(1,3600)][int]$StageTimeoutSeconds = 180,
+        [string]$ModulePath)
+    if (-not $PSBoundParameters.ContainsKey('TimeoutSeconds') -and $Configuration.Contains('Sites')) {
+        # Independent local stages plus connect/list/folder for every site.
+        $TimeoutSeconds = [Math]::Min(86400, $StageTimeoutSeconds * (6 + 3 * @($Configuration.Sites).Count))
+    }
     $name = 'SPVC-ServiceTest-' + [guid]::NewGuid().ToString('N')
     $resultPath = Join-Path $Configuration.Paths.State "$name.json"
+    $progressPath = "$resultPath.progress.json"
     $serviceName = ([Security.Principal.SecurityIdentifier]::new('S-1-5-19')).Translate([Security.Principal.NTAccount]).Value
     $principal = New-ScheduledTaskPrincipal -UserId $serviceName -LogonType ServiceAccount -RunLevel Limited
     $scriptPath = Join-Path $Destination 'scripts\Test-ServiceContext.ps1'
@@ -228,6 +235,10 @@ function Test-CleanupServiceExecution {
     # makes $action inside its callback refer to that scriptblock, not this task.
     $taskExecutable = Join-Path $PSHOME 'pwsh.exe'
     $serviceTaskAction = New-ScheduledTaskAction -Execute $taskExecutable -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$configPath`" -ResultPath `"$resultPath`""
+    if ($ModulePath) {
+        if ($ModulePath -match '["\r\n]') { throw 'Caminho de modulo invalido.' }
+        $serviceTaskAction.Arguments += " -ModulePath `"$ModulePath`""
+    }
     $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSeconds + 30)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $registered = $false
     try {
@@ -236,32 +247,78 @@ function Test-CleanupServiceExecution {
         $requestedAtUtc = [datetime]::UtcNow
         Start-ScheduledTask -TaskName $name -TaskPath '\'
         Invoke-CleanupActivity -Message 'Testando execucao sem senha como LOCAL SERVICE...' -Action {
-            $deadline = $requestedAtUtc.AddSeconds($TimeoutSeconds)
+            $totalTimer = [Diagnostics.Stopwatch]::StartNew()
+            $stageTimer = [Diagnostics.Stopwatch]::StartNew()
+            $lastSequence = 0
+            $lastStage = 'startup (sem progresso recebido)'
+            $lastDetail = ''
             while (-not (Test-Path -LiteralPath $resultPath)) {
+                if (Test-Path -LiteralPath $progressPath) {
+                    try {
+                        $progress = Get-Content -LiteralPath $progressPath -Raw -ErrorAction Stop | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+                        if ($progress.Sequence -is [long] -or $progress.Sequence -is [int]) {
+                            if ($progress.Sequence -gt $lastSequence -and $progress.Stage -is [string]) {
+                                $lastSequence = $progress.Sequence
+                                $lastStage = $progress.Stage
+                                $lastDetail = [string]$progress.Detail
+                                $stageTimer.Restart()
+                                Write-Host "[SPVC-SERVICE] Etapa: $lastStage. $lastDetail"
+                            }
+                        }
+                    } catch { Write-Verbose "Progresso temporariamente indisponivel: $($_.Exception.Message)" }
+                }
                 $taskStatus = Get-CleanupServiceTaskStatus -TaskName $name
                 # A fresh task may initially be Ready/never run. Only classify a
                 # missing result as completion after this specific run has started.
                 $finished = $taskStatus.State -notin @('Running','Queued','indisponivel') -and
                     $taskStatus.LastRunUtc -and $taskStatus.LastRunUtc -ge $requestedAtUtc.AddSeconds(-1) -and
                     $taskStatus.Code -notin @('indisponivel','0x00041301','0x00041303')
-                if ($finished -or [datetime]::UtcNow -ge $deadline) {
+                if ($finished -or $totalTimer.Elapsed.TotalSeconds -ge $TimeoutSeconds -or $stageTimer.Elapsed.TotalSeconds -ge $StageTimeoutSeconds) {
                     # The worker may have published its result between the checks.
                     if (Test-Path -LiteralPath $resultPath) { break }
-                    $reason = if ($finished) { 'A tarefa terminou sem gravar o resultado' } else { "Tempo limite de $TimeoutSeconds segundos no teste LOCAL SERVICE" }
+                    $reason = if ($finished) { 'A tarefa terminou sem gravar o resultado' }
+                        elseif ($stageTimer.Elapsed.TotalSeconds -ge $StageTimeoutSeconds) { "Tempo limite de $StageTimeoutSeconds segundos na etapa '$lastStage' ($lastDetail)" }
+                        else { "Tempo limite total de $TimeoutSeconds segundos no teste LOCAL SERVICE" }
+                    $hint = switch ($lastStage) {
+                        module { 'Confira o manifesto informado, leitura de Program Files e bloqueios de DLL por antivirus/AppLocker.' }
+                        certificate { 'Confira validade e acesso a chave privada RSA em LocalMachine\\My sob LOCAL SERVICE.' }
+                        storage { 'Confira espaco livre e permissoes de escrita nas pastas de dados.' }
+                        configuration { 'Confira acesso e sintaxe do JSON e integridade dos scripts instalados.' }
+                        { $_ -in 'connect','libraries','folder' } { 'Confira DNS, HTTPS/TLS, proxy sob LOCAL SERVICE e permissoes do aplicativo no site. O login do administrador nao comprova acesso da conta de servico.' }
+                        default { 'Confira inicializacao do PowerShell, politicas corporativas e acesso ao script/estado.' }
+                    }
+                    $reason += ". Ultima etapa: $lastStage ($lastDetail). $hint"
                     throw "[SPVC-SERVICE] $reason. Tarefa: $name. Estado: $($taskStatus.State). Ultimo resultado do Agendador: $($taskStatus.Code). Executavel: $taskExecutable. Script: $scriptPath. Configuracao: $configPath. Resultado esperado: $resultPath. Diagnostico do Agendador: $($taskStatus.QueryError). Confira politica de execucao corporativa, acesso aos arquivos, modulo compartilhado, proxy da conta de servico e log Microsoft-Windows-TaskScheduler/Operational."
                 }
                 Start-Sleep -Seconds 2
             }
         }
-        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
-        if (-not $result.Success -or $result.Identity -ne 'S-1-5-19') { throw "Teste LOCAL SERVICE falhou: $($result.Error)" }
+        $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json -AsHashtable
+        if ($result -isnot [System.Collections.IDictionary]) { throw 'Teste LOCAL SERVICE falhou: resultado JSON invalido.' }
+        if ($result['Success'] -isnot [bool] -or -not $result['Success'] -or $result['Identity'] -ne 'S-1-5-19' -or $result['Scope'] -ne 'Full') {
+            throw "Teste LOCAL SERVICE falhou: $($result['Error']) Resultado deve confirmar sucesso booleano, identidade S-1-5-19 e escopo Full."
+        }
         Write-Host 'LOCAL SERVICE validado: certificado, modulo, pastas e leitura SharePoint. Nenhuma versao removida neste teste.'
+    } catch {
+        $failure = $_
+        # Keep evidence outside the installation rollback and the task's cleanup.
+        try {
+            $diagnosticPath = Join-Path ([IO.Path]::GetTempPath()) "$name-diagnostic.log"
+            $failure.Exception.Message | Set-Content -LiteralPath $diagnosticPath -Encoding utf8
+            foreach ($artifact in @($progressPath,$resultPath,"$resultPath.log")) {
+                if (Test-Path -LiteralPath $artifact) {
+                    Get-Content -LiteralPath $artifact -Tail 200 -ErrorAction Stop | Add-Content -LiteralPath $diagnosticPath -Encoding utf8
+                }
+            }
+            Write-Warning "Diagnostico LOCAL SERVICE preservado em: $diagnosticPath"
+        } catch { Write-Warning "Nao foi possivel preservar diagnostico adicional: $($_.Exception.Message)" }
+        throw $failure
     } finally {
         if ($registered) {
             Stop-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue
             Unregister-ScheduledTask -TaskName $name -TaskPath '\' -Confirm:$false -ErrorAction SilentlyContinue
         }
-        foreach ($path in @($resultPath,"$resultPath.tmp")) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue } }
+        foreach ($path in @($resultPath,"$resultPath.tmp",$progressPath,"$progressPath.tmp","$resultPath.log")) { if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -ErrorAction SilentlyContinue } }
     }
 }
 
