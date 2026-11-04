@@ -244,7 +244,6 @@ function Test-CleanupServiceExecution {
     try {
         $null = Register-ScheduledTask -TaskName $name -TaskPath '\' -Action $serviceTaskAction -Principal $principal -Settings $settings
         $registered = $true
-        $requestedAtUtc = [datetime]::UtcNow
         Start-ScheduledTask -TaskName $name -TaskPath '\'
         Invoke-CleanupActivity -Message 'Testando execucao sem senha como LOCAL SERVICE...' -Action {
             $totalTimer = [Diagnostics.Stopwatch]::StartNew()
@@ -268,10 +267,14 @@ function Test-CleanupServiceExecution {
                     } catch { Write-Verbose "Progresso temporariamente indisponivel: $($_.Exception.Message)" }
                 }
                 $taskStatus = Get-CleanupServiceTaskStatus -TaskName $name
-                # A fresh task may initially be Ready/never run. Only classify a
-                # missing result as completion after this specific run has started.
-                $finished = $taskStatus.State -notin @('Running','Queued','indisponivel') -and
-                    $taskStatus.LastRunUtc -and $taskStatus.LastRunUtc -ge $requestedAtUtc.AddSeconds(-1) -and
+                # This GUID task was created without Force and has no previous run.
+                # Do not compare LastRunTime with the parent's clock: scheduler
+                # timestamps may be rounded or represented differently on Windows.
+                # 1999 is the scheduler's never-run sentinel; a real return code
+                # also proves a run even when its timestamp is unavailable.
+                $hasRun = ($taskStatus.LastRunUtc -and $taskStatus.LastRunUtc.Year -ge 2000) -or
+                    $taskStatus.Code -notin @('indisponivel','0x00000000','0x00041301','0x00041303')
+                $finished = $hasRun -and $taskStatus.State -notin @('Running','Queued','indisponivel') -and
                     $taskStatus.Code -notin @('indisponivel','0x00041301','0x00041303')
                 if ($finished -or $totalTimer.Elapsed.TotalSeconds -ge $TimeoutSeconds -or $stageTimer.Elapsed.TotalSeconds -ge $StageTimeoutSeconds) {
                     # The worker may have published its result between the checks.

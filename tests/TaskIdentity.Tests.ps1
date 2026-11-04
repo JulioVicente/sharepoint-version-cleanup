@@ -175,6 +175,21 @@ Describe 'Teste sob a identidade de servico' {
         { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
             Should -Throw '*Tempo limite*0x00041303*'
     }
+    It 'reconhece encerramento quando o horario do Agendador difere do processo pai' -ForEach @(@{Code=17},@{Code=0}) {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=$Code;LastRunTime=[datetime]::Now.AddHours(-4)} }
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
+            Should -Throw '*terminou sem gravar*'
+    }
+    It 'nao aprova Ready com codigo zero antes da primeira execucao' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=0;LastRunTime=[datetime]'1999-11-30'} }
+        Mock Start-Sleep {}
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
+            Should -Throw '*Tempo limite*'
+    }
     It 'nao considera codigo zero suficiente sem resultado da identidade de servico' {
         Mock Test-Path { $false }
         Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
