@@ -24,6 +24,8 @@ O teste nativo separado cria certificados e chaves descartáveis CAPI e CNG, exp
 
 O CI Windows executa também a variante elevada; a falta de elevação reprova esse teste. Ele não acessa o tenant nem substitui a tarefa de diagnóstico real sob LOCAL SERVICE executada pelo instalador.
 
+`tests/Test-ServiceTaskIntegration.ps1` exige Windows elevado e usa o Agendador real com LOCAL SERVICE. Cria apenas uma pasta descartável em ProgramData e tarefas temporárias de teste; verifica sucesso, encerramento sem resultado e timeout, incluindo a remoção das tarefas e arquivos. O worker simulado não acessa certificados, SharePoint ou email. O CI executa esse teste além dos testes unitários que usam o indicador de progresso real.
+
 `Uninstall.Tests.ps1` cobre preservação de dados, tarefas de outra instalação, locks, redirecionamentos, falhas parciais e `WhatIf`. `Launcher.Tests.ps1` cobre os modos de limpeza, cancelamento e integridade do download. Os testes não desinstalam o produto desta máquina.
 
 O CI também executa `./tests/Test-UninstallIntegration.ps1` em Windows elevado. Esse teste cria somente uma instalação fictícia temporária, usa um Agendador simulado e valida movimentação de arquivos e ACLs reais do backup. Não acessa o tenant nem tarefas existentes. A pasta temporária do próprio teste é validada e removida no `finally`.

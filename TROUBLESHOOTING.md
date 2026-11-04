@@ -34,6 +34,16 @@ Políticas de retenção, hold, rótulos ou permissões podem impedir exclusões
 
 Confira a identidade LOCAL SERVICE, certificado com chave privada em `Cert:\LocalMachine\My`, acesso a rede e permissoes das pastas locais. O instalador nao solicita senha pessoal e testa essa identidade antes de agendar. O computador precisa estar ligado. Confira gatilho, fuso local e historico do Agendador. Alterar `Schedule` no JSON nao atualiza o gatilho de uma tarefa existente.
 
+## v1.4.10: propriedade Execute ausente no teste LOCAL SERVICE
+
+`The property 'Execute' cannot be found on this object` ocultava o diagnostico de timeout: a variavel da acao agendada era encoberta pelo parametro `Action` do indicador de progresso. Execute o bootstrap atualizado como Administrador, mantendo a mesma pasta. Esse erro, por si so, nao informa por que a tarefa deixou de produzir resultado.
+
+O diagnostico `SPVC-SERVICE` agora inclui nome e estado da tarefa, resultado hexadecimal do Agendador, executavel, script, configuracao e caminho esperado do resultado. Uma tarefa que termina sem JSON validado interrompe a instalacao, mesmo com codigo de saida zero. Falhas ao consultar o Agendador tambem aparecem na mensagem. O log `%TEMP%/spvc-install-*.log` e preservado fora do rollback.
+
+A tarefa temporaria de teste pode iniciar e continuar quando o computador esta na bateria. Seu limite de execucao tem margem para o instalador registrar o timeout antes de encerra-la. A tarefa e os arquivos temporarios continuam sendo removidos no encerramento do teste.
+
+Em novo erro, confira o codigo e `Microsoft-Windows-TaskScheduler/Operational`, alem das permissoes e politicas indicadas. `0x00041301` indica tarefa em execucao; `0x00041303`, tarefa que ainda nao executou. [Codigos oficiais do Agendador](https://learn.microsoft.com/en-us/windows/win32/taskschd/task-scheduler-error-and-success-constants). Uma falha local de inicializacao nao e corrigida por novo consentimento no Entra.
+
 ## Falha ao preparar a chave privada para LOCAL SERVICE
 
 `SetProperty: Parâmetro incorreto` na etapa `preparar e testar LOCAL SERVICE` pode ocorrer quando uma chave legada CAPI importada de PFX aparece como `RSACng` no .NET. O instalador atualizado consulta o provedor nativo do certificado: aplica a ACL no arquivo identificado pelo CSP para CAPI e usa `Security Descr` do provedor para CNG. Ambos os caminhos releem a permissão de LOCAL SERVICE.

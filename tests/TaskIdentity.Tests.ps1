@@ -6,9 +6,10 @@ BeforeAll {
     function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) }
     function New-ScheduledTaskAction { param($Execute,$Argument) }
     function New-ScheduledTaskTrigger { param([switch]$Daily,$At,[switch]$Weekly,$DaysOfWeek) }
-    function New-ScheduledTaskSettingsSet { param([switch]$StartWhenAvailable,$MultipleInstances,$ExecutionTimeLimit,$RestartCount,$RestartInterval) }
+    function New-ScheduledTaskSettingsSet { param([switch]$StartWhenAvailable,$MultipleInstances,$ExecutionTimeLimit,$RestartCount,$RestartInterval,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) }
     function Register-ScheduledTask { param($TaskName,$TaskPath,$Action,$Trigger,$Settings,$Description,$Principal,[switch]$Force,$Xml,$User,$Password) }
-    function Get-ScheduledTask { param($TaskName) }
+    function Get-ScheduledTask { param($TaskName,$TaskPath) }
+    function Get-ScheduledTaskInfo { param($TaskName,$TaskPath) }
     function Export-ScheduledTask { param($TaskName) }
     function Start-ScheduledTask { param($TaskName,$TaskPath) }
     function Stop-ScheduledTask { param($TaskName,$TaskPath) }
@@ -86,6 +87,7 @@ Describe 'Pastas da conta de servico' {
 
 Describe 'Teste sob a identidade de servico' {
     BeforeEach {
+        Set-StrictMode -Version Latest
         $cfg = @{Paths=@{State=$TestDrive}}
         Mock New-ScheduledTaskPrincipal { @{} }
         Mock New-ScheduledTaskAction { @{} }
@@ -103,6 +105,7 @@ Describe 'Teste sob a identidade de servico' {
         Should -Invoke Start-ScheduledTask -Times 1
         Should -Invoke Unregister-ScheduledTask -Times 1
         Should -Invoke Register-ScheduledTask -Times 1 -ParameterFilter { -not $Password }
+        Should -Invoke New-ScheduledTaskSettingsSet -Times 1 -ParameterFilter { $AllowStartIfOnBatteries -and $DontStopIfGoingOnBatteries -and $ExecutionTimeLimit.TotalSeconds -eq 210 }
     }
     It 'recusa resultado obtido sob outra identidade e limpa a tarefa' {
         Mock Get-Content { '{"Success":true,"Identity":"S-1-5-18","Error":"identidade incorreta"}' }
@@ -112,6 +115,59 @@ Describe 'Teste sob a identidade de servico' {
     It 'preserva erro de acesso da conta de servico e limpa a tarefa' {
         Mock Get-Content { '{"Success":false,"Identity":"S-1-5-19","Error":"acesso negado"}' }
         { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } | Should -Throw '*acesso negado*'
+        Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+    It 'preserva o diagnostico de timeout dentro do indicador real sem sombrear Action' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Running'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=267009;LastRunTime=[datetime]::Now} }
+        Mock Start-Sleep {}
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
+            Should -Throw '*SPVC-SERVICE*Tempo limite*Estado: Running*0x00041301*Executavel:*pwsh.exe*Resultado esperado:*'
+        Should -Invoke Stop-ScheduledTask -Times 1
+        Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+    It 'informa imediatamente o codigo de uma tarefa encerrada sem JSON' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=2147942402;LastRunTime=[datetime]::Now} }
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } |
+            Should -Throw '*terminou sem gravar*0x80070002*Executavel:*pwsh.exe*'
+        Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+    It 'nao confunde tarefa ainda nao iniciada com encerramento sem resultado' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=267011;LastRunTime=[datetime]'1999-11-30'} }
+        Mock Start-Sleep {}
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
+            Should -Throw '*Tempo limite*0x00041303*'
+    }
+    It 'nao considera codigo zero suficiente sem resultado da identidade de servico' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo { [pscustomobject]@{LastTaskResult=0;LastRunTime=[datetime]::Now} }
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } |
+            Should -Throw '*terminou sem gravar*0x00000000*'
+    }
+    It 'nao mascara o timeout quando a consulta ao Agendador falha' {
+        Mock Test-Path { $false }
+        Mock Get-ScheduledTask { throw 'consulta de estado bloqueada' }
+        Mock Get-ScheduledTaskInfo { throw 'consulta de resultado bloqueada' }
+        Mock Start-Sleep {}
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive -TimeoutSeconds 1 } |
+            Should -Throw '*SPVC-SERVICE*Tempo limite*indisponivel*consulta de estado bloqueada*consulta de resultado bloqueada*'
+        Should -Invoke Unregister-ScheduledTask -Times 1
+    }
+    It 'aceita resultado publicado durante a ultima consulta ao Agendador' {
+        $script:serviceResultPublished = $false
+        Mock Test-Path { $script:serviceResultPublished }
+        Mock Get-ScheduledTask { [pscustomobject]@{State='Ready'} }
+        Mock Get-ScheduledTaskInfo {
+            $script:serviceResultPublished = $true
+            [pscustomobject]@{LastTaskResult=0;LastRunTime=[datetime]::Now}
+        }
+        { Test-CleanupServiceExecution -Configuration $cfg -Destination $TestDrive } | Should -Not -Throw
         Should -Invoke Unregister-ScheduledTask -Times 1
     }
 }

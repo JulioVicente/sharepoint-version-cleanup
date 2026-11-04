@@ -200,28 +200,55 @@ function Initialize-CleanupServiceIdentity {
     }
 }
 
+function Get-CleanupServiceTaskStatus {
+    param([string]$TaskName)
+    $status = [ordered]@{ State='indisponivel'; Code='indisponivel'; LastRunUtc=$null; QueryError='' }
+    try {
+        $scheduledTask = Get-ScheduledTask -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
+        $status.State = [string]$scheduledTask.State
+    } catch { $status.QueryError = $_.Exception.Message }
+    try {
+        $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -TaskPath '\' -ErrorAction Stop
+        $status.Code = '0x{0:X8}' -f ([long]$taskInfo.LastTaskResult -band 4294967295L)
+        $status.LastRunUtc = ([datetime]$taskInfo.LastRunTime).ToUniversalTime()
+    } catch { $status.QueryError = ($status.QueryError + ' ' + $_.Exception.Message).Trim() }
+    return [pscustomobject]$status
+}
+
 function Test-CleanupServiceExecution {
-    param([System.Collections.IDictionary]$Configuration,[string]$Destination)
+    param([System.Collections.IDictionary]$Configuration,[string]$Destination,
+        [ValidateRange(1,3600)][int]$TimeoutSeconds = 180)
     $name = 'SPVC-ServiceTest-' + [guid]::NewGuid().ToString('N')
     $resultPath = Join-Path $Configuration.Paths.State "$name.json"
     $serviceName = ([Security.Principal.SecurityIdentifier]::new('S-1-5-19')).Translate([Security.Principal.NTAccount]).Value
     $principal = New-ScheduledTaskPrincipal -UserId $serviceName -LogonType ServiceAccount -RunLevel Limited
     $scriptPath = Join-Path $Destination 'scripts\Test-ServiceContext.ps1'
     $configPath = Join-Path $Destination 'config\config.json'
-    $action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'pwsh.exe') -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$configPath`" -ResultPath `"$resultPath`""
-    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
+    # Invoke-CleanupActivity has an Action parameter. PowerShell's dynamic scope
+    # makes $action inside its callback refer to that scriptblock, not this task.
+    $taskExecutable = Join-Path $PSHOME 'pwsh.exe'
+    $serviceTaskAction = New-ScheduledTaskAction -Execute $taskExecutable -Argument "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$scriptPath`" -ConfigPath `"$configPath`" -ResultPath `"$resultPath`""
+    $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Seconds ($TimeoutSeconds + 30)) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     $registered = $false
     try {
-        $null = Register-ScheduledTask -TaskName $name -TaskPath '\' -Action $action -Principal $principal -Settings $settings
+        $null = Register-ScheduledTask -TaskName $name -TaskPath '\' -Action $serviceTaskAction -Principal $principal -Settings $settings
         $registered = $true
+        $requestedAtUtc = [datetime]::UtcNow
         Start-ScheduledTask -TaskName $name -TaskPath '\'
         Invoke-CleanupActivity -Message 'Testando execucao sem senha como LOCAL SERVICE...' -Action {
-            $deadline = [datetime]::UtcNow.AddMinutes(3)
+            $deadline = $requestedAtUtc.AddSeconds($TimeoutSeconds)
             while (-not (Test-Path -LiteralPath $resultPath)) {
-                if ([datetime]::UtcNow -ge $deadline) {
-                    $info = Get-ScheduledTaskInfo -TaskName $name -TaskPath '\' -ErrorAction SilentlyContinue
-                    $code = if ($info) { '0x{0:X8}' -f [long]$info.LastTaskResult } else { 'indisponivel' }
-                    throw "[SPVC-SERVICE] Tempo limite no teste LOCAL SERVICE. Ultimo resultado do Agendador: $code. Executavel: $($action.Execute). Confira politica de execucao corporativa, acesso ao script '$scriptPath', modulo compartilhado, proxy da conta de servico e log Microsoft-Windows-TaskScheduler/Operational."
+                $taskStatus = Get-CleanupServiceTaskStatus -TaskName $name
+                # A fresh task may initially be Ready/never run. Only classify a
+                # missing result as completion after this specific run has started.
+                $finished = $taskStatus.State -notin @('Running','Queued','indisponivel') -and
+                    $taskStatus.LastRunUtc -and $taskStatus.LastRunUtc -ge $requestedAtUtc.AddSeconds(-1) -and
+                    $taskStatus.Code -notin @('indisponivel','0x00041301','0x00041303')
+                if ($finished -or [datetime]::UtcNow -ge $deadline) {
+                    # The worker may have published its result between the checks.
+                    if (Test-Path -LiteralPath $resultPath) { break }
+                    $reason = if ($finished) { 'A tarefa terminou sem gravar o resultado' } else { "Tempo limite de $TimeoutSeconds segundos no teste LOCAL SERVICE" }
+                    throw "[SPVC-SERVICE] $reason. Tarefa: $name. Estado: $($taskStatus.State). Ultimo resultado do Agendador: $($taskStatus.Code). Executavel: $taskExecutable. Script: $scriptPath. Configuracao: $configPath. Resultado esperado: $resultPath. Diagnostico do Agendador: $($taskStatus.QueryError). Confira politica de execucao corporativa, acesso aos arquivos, modulo compartilhado, proxy da conta de servico e log Microsoft-Windows-TaskScheduler/Operational."
                 }
                 Start-Sleep -Seconds 2
             }

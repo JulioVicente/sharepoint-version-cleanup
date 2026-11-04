@@ -28,6 +28,9 @@ jobs:
       - name: Verify real Windows CAPI and CNG key ACLs
         shell: pwsh
         run: ./tests/Test-KeyAclIntegration.ps1 -MachineKey
+      - name: Verify real LOCAL SERVICE task execution and failure diagnostics
+        shell: pwsh
+        run: ./tests/Test-ServiceTaskIntegration.ps1
       - name: Verify uninstall archive and Windows ACLs
         shell: pwsh
         run: ./tests/Test-UninstallIntegration.ps1
