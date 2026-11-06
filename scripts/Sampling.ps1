@@ -45,7 +45,7 @@ function Select-WeightedSample {
         [pscustomobject]@{ Candidate = $candidate; Key = -[math]::Log($uniform) / $candidate.Factors.Weight }
     }
     $totalWeight = ($remaining | Measure-Object -Property { $_.Factors.Weight } -Sum).Sum
-    $ranked | Sort-Object Key | Select-Object -First $Settings.SamplesPerLibrary | ForEach-Object {
+    $ranked | Sort-Object Key -Top $Settings.SamplesPerLibrary | ForEach-Object {
         [pscustomobject]@{
             Id = $_.Candidate.Id; Item = $_.Candidate.Item; Factors = $_.Candidate.Factors
             CycleId = $State.CycleId; CandidateCount = $remaining.Count

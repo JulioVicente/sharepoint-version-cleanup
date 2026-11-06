@@ -6,7 +6,7 @@
 
 PnP.PowerShell 3.x e Microsoft.Graph.Authentication 2.x compatíveis já presentes em AllUsers são reutilizados. Quando ausentes, são instaladas as versões 3.0.0 e 2.25.0, respectivamente. A importação usa o manifesto compartilhado. O requisito PowerShell 7.4.6 segue a [publicação oficial do PnP 3](https://pnp.github.io/blog/pnp-powershell/pnp-powershell-v3-0-0/).
 
-O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.12 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
+O formato recomendado de uma linha é `iwr -useb https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/main/bootstrap.ps1 | iex`. Ele instala a versão estável v1.4.13 sem parâmetros extras. É equivalente ao download e execução explícitos do `bootstrap.ps1`; use o fluxo de inspeção do guia rápido quando quiser revisar o conteúdo antes de executar.
 
 Os scripts de operação exigem PowerShell 7.4.6+ e PnP.PowerShell 3.x. O diagnóstico de pré-requisitos também pode ser executado em Windows PowerShell 5.1. A limpeza usa aplicativo/certificado, portanto não pede login nas execuções agendadas. Pester é dependência apenas de desenvolvimento.
 
@@ -28,7 +28,7 @@ O instalador copia scripts, template, exemplo JSON e documentação operacional.
 
 ## Fluxo e aprovações
 
-O wizard valida dados, registra/reutiliza aplicativo, grava configuracao, valida certificado e oferece simulacao opcional: pular, amostra de ate 10 arquivos por site (padrao) ou escopo completo. Pular nao causa rollback. A amostra e identificada no relatorio e nao altera o progresso de uma simulacao completa. Solicita aprovacao antes do piloto aplicado e novamente para agendar exclusoes. As tarefas usam LOCAL SERVICE, sem senha pessoal e sem elevacao. Antes do piloto, uma tarefa temporaria verifica certificado, modulo PnP, pastas e leitura SharePoint sob essa identidade. Escopos sem aprovacao continuam em simulacao.
+O wizard valida dados, registra/reutiliza aplicativo, grava configuracao, valida certificado e oferece somente pular ou simular ate 10 arquivos por site. Pular nao causa rollback; uma falha no teste opcional tambem permite continuar em simulacao. A amostra e identificada no relatorio e preserva o progresso das execucoes completas. O wizard agenda somente simulacao. Para ativar exclusoes, execute separadamente um piloto aplicado e use Enable-Production.ps1. As tarefas usam LOCAL SERVICE, sem senha pessoal e sem elevacao. O teste tecnico dessa identidade continua obrigatorio e verifica certificado, modulo PnP, pastas e leitura SharePoint.
 
 A operação agendada é uma tarefa do Windows, não um serviço residente. Há uma tarefa por site, diária ou semanal, com limite de 12 horas e bloqueio de múltiplas instâncias. O lock adicional é por site e diretório de estado. Consulte a [referência do JSON](CONFIGURATION.md) para detalhes de incremental e retomada.
 
@@ -59,9 +59,9 @@ Para limpar a instalação anterior e abrir o wizard novamente:
 Também é possível baixar o lançador versionado e executá-lo com parâmetros:
 
 ```powershell
-.\sharepoint-version-cleanup-v1.4.12.ps1 -Uninstall -WhatIf
-.\sharepoint-version-cleanup-v1.4.12.ps1 -Uninstall
-.\sharepoint-version-cleanup-v1.4.12.ps1 -CleanInstall -InstallPath 'C:\SPCleanup'
+.\sharepoint-version-cleanup-v1.4.13.ps1 -Uninstall -WhatIf
+.\sharepoint-version-cleanup-v1.4.13.ps1 -Uninstall
+.\sharepoint-version-cleanup-v1.4.13.ps1 -CleanInstall -InstallPath 'C:\SPCleanup'
 ```
 
 `-WhatIf` no bootstrap apenas descreve o modo, sem baixar ou executar componentes. Para inspecionar localmente as tarefas e os componentes identificados em uma instalação da v1.4.4+, use PowerShell 7: `& "$env:ProgramData\SharePointVersionCleanup\scripts\Uninstall.ps1" -WhatIf`. O script local aceita `-InstallPath` para outro destino. O desinstalador não importa Graph/PnP nem exige login no Microsoft 365; o bootstrap precisa de PowerShell 7.4.6+ para executá-lo.
@@ -78,7 +78,7 @@ Em falha parcial, os arquivos já arquivados permanecem no backup e tarefas já 
 
 ## Versão e integridade
 
-O bootstrap instala componentes da tag `v1.4.12` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`. Os modos de limpeza exigem uma revisão que inclua `scripts/Uninstall.ps1`.
+O bootstrap instala componentes da tag `v1.4.13` por padrão, inclusive quando obtido pela URL de `main`. O manifesto identifica a mesma versão. O parâmetro `-ReleaseVersion`, na execução por arquivo, seleciona outra tag ou commit; `-RepositoryRawUrl` permite usar outra origem com manifesto compatível. Para uma instalação fixada, baixe o bootstrap da tag desejada; tags anteriores à v1.4.2 podem exigir informar a mesma revisão em `-ReleaseVersion`. Os modos de limpeza exigem uma revisão que inclua `scripts/Uninstall.ps1`.
 
 A instalação remota verifica SHA256 de `Install.ps1` antes de executá-lo e dos componentes copiados, usando `release-manifest.json` da mesma revisão. O manifesto fica na instalação. Hashes detectam divergências; não substituem assinatura digital nem protegem contra comprometimento da origem comum ao script e manifesto.
 

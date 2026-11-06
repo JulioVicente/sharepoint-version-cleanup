@@ -230,26 +230,40 @@ try {
         Write-Host "Biblioteca: $($library.Title)"
         Write-AuditEvent -Event 'LibraryScanned' -Outcome 'Started' -FileUrl $libraryRoot -Details @{ Library = $library.Title; LibraryId = [string]$library.Id }
         $sampleCandidates = [Collections.Generic.List[object]]::new()
-        $listParameters = @{
-            List = $library.Id; PageSize = 500; Connection = $connection
-            Fields = @('FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size')
-        }
-        if ($scopeFolder) { $listParameters.FolderServerRelativeUrl = $scopeFolder }
-        $listActivity = 'Lendo itens da biblioteca (paginas de 500)...'
-        if ($SimulationFileLimit -gt 0) {
-            $remaining = $SimulationFileLimit - $report.FilesInspected
-            $viewFields = ($listParameters.Fields | ForEach-Object { "<FieldRef Name='$_'/>" }) -join ''
-            # Query and Fields are different PnP parameter sets. Omitting PageSize
-            # prevents PnP from following pages beyond this server-side RowLimit.
-            $listParameters.Remove('Fields')
-            $listParameters.Remove('PageSize')
-            $listParameters.Query = "<View Scope='RecursiveAll'><Query><Where><Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq></Where><OrderBy><FieldRef Name='ID' Ascending='TRUE'/></OrderBy></Query><ViewFields>$viewFields</ViewFields><RowLimit Paged='FALSE'>$remaining</RowLimit></View>"
-            $listActivity = "Lendo amostra de ate $remaining arquivos da biblioteca..."
-        }
-        $items = @(Invoke-PnPRequest { Get-PnPListItem @listParameters } -Activity $listActivity)
-        $fileCount = @($items | Where-Object { [int]$_['FSObjType'] -eq 0 -and (-not $scopeFolder -or ([string]$_['FileRef']).StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) }).Count
-        $fileIndex = 0
-        Write-Host "Itens recebidos: $($items.Count) | Arquivos no escopo: $fileCount"
+        $listingTimer = [Diagnostics.Stopwatch]::StartNew()
+        $pageNumber = 0; $itemsReceived = 0L; $fileIndex = 0; $lastItemId = 0L
+        $viewFields = (@('ID','FileRef','FileLeafRef','FSObjType','Modified','UniqueId','_UIVersionString','_ComplianceTag','_ComplianceFlags','File_x0020_Size') |
+            ForEach-Object { "<FieldRef Name='$_'/>" }) -join ''
+        while ($true) {
+            if ($SimulationFileLimit -gt 0 -and $report.FilesInspected -ge $SimulationFileLimit) { break }
+            $pageLimit = if ($SimulationFileLimit -gt 0) { [math]::Min(500, $SimulationFileLimit - $report.FilesInspected) } else { 500 }
+            $filter = "<Gt><FieldRef Name='ID'/><Value Type='Counter'>$lastItemId</Value></Gt>"
+            if ($SimulationFileLimit -gt 0) { $filter = "<And>$filter<Eq><FieldRef Name='FSObjType'/><Value Type='Integer'>0</Value></Eq></And>" }
+            # Each request returns one bounded page. The indexed ID cursor advances
+            # only after this page has been processed; retries replay this page only.
+            $listParameters = @{
+                List = $library.Id; Connection = $connection
+                Query = "<View Scope='RecursiveAll'><Query><Where>$filter</Where><OrderBy><FieldRef Name='ID' Ascending='TRUE'/></OrderBy></Query><ViewFields>$viewFields</ViewFields><RowLimit Paged='FALSE'>$pageLimit</RowLimit></View>"
+            }
+            if ($scopeFolder) { $listParameters.FolderServerRelativeUrl = $scopeFolder }
+            $nextPage = $pageNumber + 1
+            Write-Host "[SPVC-LIST] Biblioteca: $($library.Title) | Paginas recebidas: $pageNumber | Itens recebidos: $itemsReceived | Aguardando pagina $nextPage. Total ainda desconhecido."
+            $items = @(Invoke-PnPRequest { Get-PnPListItem @listParameters } -Activity "Lendo pagina $nextPage da biblioteca (ate $pageLimit itens)...")
+            if (-not $items.Count) { break }
+            $pageNumber++; $itemsReceived += $items.Count
+            Write-Host ("[SPVC-LIST] Biblioteca: {0} | Paginas recebidas: {1} | Itens recebidos: {2} | Tempo: {3:N0}s" -f
+                $library.Title, $pageNumber, $itemsReceived, $listingTimer.Elapsed.TotalSeconds)
+            $nextItemId = $lastItemId
+            if ($items.Count -ge $pageLimit) {
+                # Refuse a nonadvancing/malformed cursor instead of looping forever.
+                foreach ($pageItem in $items) {
+                    $id = 0L
+                    if (-not [long]::TryParse([string]$pageItem['ID'], [ref]$id) -or $id -le $nextItemId) {
+                        throw '[SPVC-PAGING] A pagina retornou IDs ausentes ou fora de ordem. A leitura foi interrompida para evitar repeticao; confira o log e tente novamente.'
+                    }
+                    $nextItemId = $id
+                }
+            }
         foreach ($item in $items) {
             $fileUrl = [string]$item['FileRef']
             if ($scopeFolder -and -not $fileUrl.StartsWith("$scopeFolder/", [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -259,8 +273,8 @@ try {
             if ($SimulationFileLimit -gt 0 -and $report.FilesInspected -ge $SimulationFileLimit) { break libraryLoop }
             $report.FilesInspected++
             $fileIndex++
-            if (-not $Apply -and $simulationResults.Count) { Write-Host "Conferindo arquivo $fileIndex de $fileCount : $fileUrl" }
-            else { Write-Host "Arquivo $fileIndex de $fileCount : $fileUrl" }
+            if (-not $Apply -and $simulationResults.Count) { Write-Host "Conferindo arquivo $fileIndex (pagina $pageNumber) : $fileUrl" }
+            else { Write-Host "Arquivo $fileIndex (pagina $pageNumber) : $fileUrl" }
             if ($completed.Contains($fileUrl)) {
                 Write-AuditEvent -Event 'FileSkipped' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'Concluido anteriormente neste checkpoint.'
                 continue
@@ -286,7 +300,12 @@ try {
                 if ($Apply -and $signature -and $inventory[$fileUrl] -and $inventory[$fileUrl].Signature -eq $signature -and
                     (-not $inventory[$fileUrl].RecheckAt -or [datetime]$inventory[$fileUrl].RecheckAt -gt $startedAt.ToUniversalTime())) {
                     $report.FilesUnchanged++
-                    if ($config.Sampling.Enabled) { $sampleCandidates.Add($item) }
+                    if ($config.Sampling.Enabled) {
+                        # Retain only sampling metadata, not the entire CSOM object/page.
+                        $sampleSize = $item['File_x0020_Size']
+                        if ($null -ne $sampleSize -and $sampleSize.PSObject.Properties['LookupValue']) { $sampleSize = $sampleSize.LookupValue }
+                        $sampleCandidates.Add(@{UniqueId=[string]$item['UniqueId'];FileRef=$fileUrl;Modified=$item['Modified'];File_x0020_Size=[string]$sampleSize})
+                    }
                     Write-AuditEvent -Event 'FileUnchanged' -Outcome 'Skipped' -FileUrl $fileUrl -Reason 'UniqueId, Modified e versao atual iguais ao inventario aplicado.'
                     Save-Checkpoint $fileUrl
                     continue
@@ -327,9 +346,20 @@ try {
                 $versions = @(Invoke-PnPRequest { Get-PnPFileVersion -Url $fileUrl -Connection $connection } -Activity 'Consultando historico de versoes...' |
                     Where-Object { -not ($_.PSObject.Properties.Name -contains 'IsCurrentVersion' -and $_.IsCurrentVersion) } |
                     Sort-Object Created, Id -Descending)
-                $excess = @($versions | Select-Object -Skip ([int]$config.VersionsToKeep))
-                $obsolete = @($excess | Where-Object { ([datetime]$_.Created).ToUniversalTime() -le $ageCutoff })
-                $tooRecent = @($excess | Where-Object { ([datetime]$_.Created).ToUniversalTime() -gt $ageCutoff })
+                $obsolete = [Collections.Generic.List[object]]::new()
+                $tooRecent = [Collections.Generic.List[object]]::new()
+                $nextEligible = $null
+                for ($versionIndex = [int]$config.VersionsToKeep; $versionIndex -lt $versions.Count; $versionIndex++) {
+                    $candidate = $versions[$versionIndex]
+                    $created = ([datetime]$candidate.Created).ToUniversalTime()
+                    if ($created -le $ageCutoff) { $obsolete.Add($candidate) }
+                    else {
+                        $tooRecent.Add($candidate)
+                        $eligibleAt = $created.AddDays($config.Safety.MinimumVersionAgeDays)
+                        if ($null -eq $nextEligible -or $eligibleAt -lt $nextEligible) { $nextEligible = $eligibleAt }
+                    }
+                }
+                $eligibleBytes = 0L
                 Write-AuditEvent -Event 'RetentionDecision' -Outcome 'Success' -FileUrl $fileUrl `
                     -Reason 'Preservar atual e N historicas; excluir excedentes somente depois da idade minima.' `
                     -Details @{ HistoricalCount = $versions.Count; EligibleCount = $obsolete.Count
@@ -339,6 +369,7 @@ try {
                     $size = if ($version.PSObject.Properties.Name -contains 'Size') { [long]$version.Size } else { 0L }
                     $report.VersionsEligible++
                     $report.BytesEligible += $size
+                    $eligibleBytes += $size
                     if ($Apply) {
                         if ($report.VersionsDeleted -ge $config.Safety.MaxVersionsPerRun) {
                             $report.LimitReached = $true
@@ -365,12 +396,7 @@ try {
                     # recheck sooner when an excluded version reaches minimum age.
                     $validUntil = $startedAt.ToUniversalTime().AddHours(24)
                     if ($tooRecent.Count) {
-                        $nextEligible = ($tooRecent | Sort-Object Created | Select-Object -First 1).Created.ToUniversalTime().AddDays($config.Safety.MinimumVersionAgeDays)
                         if ($nextEligible -lt $validUntil) { $validUntil = $nextEligible }
-                    }
-                    $eligibleBytes = 0L
-                    foreach ($version in $obsolete) {
-                        if ($version.PSObject.Properties.Name -contains 'Size') { $eligibleBytes += [long]$version.Size }
                     }
                     $simulationResults[$fileUrl] = @{ Signature=$signature; CheckedAt=$startedAt.ToUniversalTime().ToString('o')
                         ValidUntil=$validUntil.ToString('o'); VersionsEligible=$obsolete.Count; BytesEligible=$eligibleBytes
@@ -378,7 +404,7 @@ try {
                 }
                 if ($Apply -and $signature) {
                     $recheckAt = if ($tooRecent.Count) {
-                        (($tooRecent | Sort-Object Created | Select-Object -First 1).Created.ToUniversalTime().AddDays($config.Safety.MinimumVersionAgeDays)).ToString('o')
+                        $nextEligible.ToString('o')
                     } else { $null }
                     $inventory[$fileUrl] = @{ Signature = $signature; RecheckAt = $recheckAt }
                     Save-Inventory
@@ -394,6 +420,14 @@ try {
                 continue
             }
         }
+            # Release CSOM page objects before requesting the next page.
+            $pageCount = $items.Count
+            $items = $null; $item = $null; $pageItem = $null
+            if ($pageCount -lt $pageLimit) { break }
+            $lastItemId = $nextItemId
+        }
+        $listingTimer.Stop()
+        Write-Host "[SPVC-LIST] Biblioteca: $($library.Title) | Leitura concluida: $pageNumber pagina(s), $itemsReceived item(ns), $fileIndex arquivo(s) no escopo."
         if ($sampleCandidates.Count) {
             $libraryKey = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes([string]$library.Id))).Substring(0,16)
             $samplePath = Join-Path $config.Paths.State "sampling-$siteKey-$scopeKey-$libraryKey.json"

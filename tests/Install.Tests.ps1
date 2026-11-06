@@ -7,7 +7,7 @@ BeforeAll {
     . (Join-Path $root 'scripts/Configuration.ps1')
 }
 
-Describe 'Parametros da simulacao e do piloto no wizard' {
+Describe 'Teste opcional limitado do wizard' {
     BeforeEach {
         $installation = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         $scriptDirectory = Join-Path $installation 'scripts'
@@ -27,7 +27,7 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
 '@ | Set-Content (Join-Path $scriptDirectory 'cleanup-versions.ps1')
         $site = 'https://contoso.sharepoint.com/sites/piloto'
         Mock Read-CleanupConfiguration { @{Sites=@($site);FolderScopes=@{$site='/sites/piloto/teste03'};VersionsToKeep=10} }
-        Mock Read-YesNo { param($Prompt) $Prompt -notlike 'Limitar a simulacao*' }
+        Mock Read-YesNo { $true }
     }
     It 'permite pular todos os sites sem executar limpeza nem pedir aprovacao do piloto' {
         $other = 'https://contoso.sharepoint.com/sites/outro'
@@ -36,7 +36,7 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
         $approved.Count | Should -Be 0
         Test-Path $callLog | Should -BeFalse
-        Should -Invoke Read-YesNo -Times 2 -Exactly -ParameterFilter { $Prompt -eq 'Executar a simulacao agora?' }
+        Should -Invoke Read-YesNo -Times 2 -Exactly -ParameterFilter { $Prompt -eq 'Testar ate 10 arquivos agora? N pula o teste' }
         Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Aprova excluir*' }
     }
     It 'executa somente a amostra de dez e continua sem aplicar ou aprovar producao' {
@@ -50,23 +50,20 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $approved.Count | Should -Be 0
         Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Aprova excluir*' -or $Prompt -like 'Piloto aprovado*' }
     }
-    It 'passa ConfigPath site pasta e PassThru nas duas chamadas e Apply so no piloto' {
+    It 'mantem configuracao e escopo ao testar sem oferecer varredura completa' {
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
         $calls = @(Get-Content $callLog | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
-        $calls.Count | Should -Be 2
-        foreach ($call in $calls) {
-            $call.ConfigPath | Should -Be $configPath
-            $call.SiteUrl | Should -Be $site
-            $call.FolderServerRelativeUrl | Should -Be '/sites/piloto/teste03'
-            $call.PassThru | Should -BeTrue
-        }
-        $calls[0].ContainsKey('Apply') | Should -BeFalse
-        $calls[1].Apply | Should -BeTrue
-        $approved | Should -Be @($site)
+        $calls.Count | Should -Be 1
+        $calls[0].ConfigPath | Should -Be $configPath
+        $calls[0].SiteUrl | Should -Be $site
+        $calls[0].PassThru | Should -BeTrue
+        $calls[0].SimulationFileLimit | Should -Be 10
+        $approved.Count | Should -Be 0
+        Should -Invoke Read-YesNo -Times 1 -Exactly
     }
     It 'passa ConfigPath sem pasta e nao aplica sem aprovacao' {
         Mock Read-CleanupConfiguration { @{Sites=@($site);FolderScopes=@{$site=''};VersionsToKeep=10} }
-        Mock Read-YesNo { param($Prompt) $Prompt -eq 'Executar a simulacao agora?' }
+        Mock Read-YesNo { param($Prompt) $Prompt -eq 'Testar ate 10 arquivos agora? N pula o teste' }
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
         $calls = @(Get-Content $callLog | ForEach-Object { $_ | ConvertFrom-Json -AsHashtable })
         $calls.Count | Should -Be 1
@@ -76,18 +73,12 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $calls[0].ContainsKey('Apply') | Should -BeFalse
         $approved.Count | Should -Be 0
     }
-    It 'piloto limitado retorna pelo processo isolado e solicita aprovacao antes de agendar' -ForEach @(@{Approve=$true},@{Approve=$false}) {
-        $fixturePath = Join-Path $scriptDirectory 'cleanup-versions.ps1'
-        Add-Content -LiteralPath $fixturePath -Value ''
-        $fixture = Get-Content -LiteralPath $fixturePath -Raw
-        $fixture = $fixture.Replace('Success=$true;', "Status=`$(if (`$Apply) { 'Deferred' } else { 'Completed' }); LimitReached=[bool]`$Apply; Success=(-not `$Apply);")
-        $fixture = $fixture.Replace('FilesProcessed=1;', 'FilesProcessed=0;')
-        Set-Content -LiteralPath $fixturePath -Value $fixture
-        Mock Read-YesNo { param($Prompt) if ($Prompt -like 'Limitar a simulacao*') { return $false }; if ($Prompt -like 'Piloto aprovado*') { return $Approve }; $true }
+    It 'permite pular apos falha do teste sem aprovar producao' {
+        Set-Content (Join-Path $scriptDirectory 'cleanup-versions.ps1') 'throw "rede indisponivel"'
+        Mock Read-YesNo { param($Prompt) $Prompt -like 'Testar ate 10*' }
         $approved = @(Invoke-SetupValidation -ConfigPath $configPath)
-        $approved.Count | Should -Be ([int]$Approve)
-        Should -Invoke Read-YesNo -Times 1 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }
-        @(Get-Content $callLog).Count | Should -Be 2
+        $approved.Count | Should -Be 0
+        Should -Invoke Read-YesNo -Times 1 -ParameterFilter { $Prompt -like 'Tentar o teste novamente*' }
     }
     It 'resultado parcial permite seguir em simulacao ou repetir agora: <RetryNow>' -ForEach @(@{RetryNow=$false},@{RetryNow=$true}) {
         $fixturePath = Join-Path $scriptDirectory 'cleanup-versions.ps1'
@@ -97,7 +88,7 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         Set-Content -LiteralPath $fixturePath -Value $fixture
         Mock Read-YesNo {
             param($Prompt)
-            if ($Prompt -eq 'Executar a simulacao agora?') { return $true }
+            if ($Prompt -eq 'Testar ate 10 arquivos agora? N pula o teste') { return $true }
             if ($Prompt -like 'Simulacao parcial*') { return $RetryNow }
             return $false
         }
@@ -105,7 +96,8 @@ $PSBoundParameters | ConvertTo-Json -Compress | Add-Content (Join-Path $PSScript
         $approved.Count | Should -Be 0
         @(Get-Content $callLog).Count | Should -Be (1 + [int]$RetryNow)
         Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Piloto aprovado*' }
-        Should -Invoke Read-YesNo -Times ([int]$RetryNow) -Exactly -ParameterFilter { $Prompt -like 'Aprova excluir*' }
+        Should -Invoke Read-YesNo -Times 0 -ParameterFilter { $Prompt -like 'Aprova excluir*' }
+        foreach ($call in (Get-Content $callLog | ConvertFrom-Json)) { $call.SimulationFileLimit | Should -Be 10 }
     }
 }
 Describe 'Installer' {

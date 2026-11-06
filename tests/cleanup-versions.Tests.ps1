@@ -23,7 +23,7 @@ Describe 'cleanup-versions.ps1' {
         # Declara os comandos para que esta suite rode mesmo sem PnP.PowerShell instalado.
         function global:Connect-PnPOnline { param($Url,$ClientId,$Tenant,$Thumbprint,[switch]$ReturnConnection) }
         function global:Get-PnPList { param($Connection,$Includes,$Identity,[switch]$ThrowExceptionIfListNotFound) }
-        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection,$FolderServerRelativeUrl,$Query) }
+        function global:Get-PnPListItem { param($List,$PageSize,$Fields,$Connection,$FolderServerRelativeUrl,$Query,$ScriptBlock) }
         function global:Get-PnPFolder { param($Url,$Connection) }
         function global:Get-PnPFile { param($Url,[switch]$AsFileObject,$Connection) }
         function global:Get-PnPProperty { param($ClientObject,$Property,$Connection) }
@@ -58,9 +58,89 @@ Describe 'cleanup-versions.ps1' {
         }
     }
 
+    It 'processa a primeira pagina antes de buscar a segunda e mostra contagem acumulada' {
+        Mock Write-Host {}
+        Mock Get-PnPListItem {
+            param($Query)
+            if (([xml]$Query).View.Query.Where.Gt.Value.InnerText -eq '0') {
+                1..499 | ForEach-Object { @{ID=($_*2);FSObjType=1;FileRef="/docs/pasta$_"} }
+                @{ID=1000;FSObjType=0;FileRef='/docs/a.docx'}
+            } else {
+                Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+                ([xml]$Query).View.Query.Where.Gt.Value.InnerText | Should -Be '1000'
+                @{ID=1005;FSObjType=0;FileRef='/docs/b.docx'}
+            }
+        }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Success | Should -BeTrue
+        $r.FilesProcessed | Should -Be 2
+        Should -Invoke Write-Host -Times 1 -ParameterFilter { $Object -like '*Paginas recebidas: 2 | Itens recebidos: 501 | Tempo:*' }
+        Should -Invoke Get-PnPListItem -Times 2 -Exactly -ParameterFilter { -not $PageSize -and -not $Fields -and ([xml]$Query).View.RowLimit.InnerText -eq '500' }
+        Should -Invoke Get-PnPFileVersion -Times 2 -Exactly
+    }
+    It 'retry repete somente a pagina atual sem duplicar contadores ou processamento' {
+        Mock Write-Host {}
+        Mock Start-Sleep {}
+        $listingCounter = @{ Calls = 0 }
+        Mock Get-PnPListItem {
+            param($Query)
+            $listingCounter.Calls++
+            if ($listingCounter.Calls -eq 1) {
+                1..499 | ForEach-Object { @{ID=$_;FSObjType=1;FileRef="/docs/pasta$_"} }
+                @{ID=500;FSObjType=0;FileRef='/docs/a.docx'}
+            } elseif ($listingCounter.Calls -eq 2) { throw [TimeoutException]::new('timeout na segunda pagina') }
+            else {
+                ([xml]$Query).View.Query.Where.Gt.Value.InnerText | Should -Be '500'
+                @{ID=501;FSObjType=0;FileRef='/docs/b.docx'}
+            }
+        }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Error | Should -BeNullOrEmpty
+        $r.Success | Should -BeTrue
+        $r.FilesProcessed | Should -Be 2
+        Should -Invoke Write-Host -Times 1 -ParameterFilter { $Object -like '*Paginas recebidas: 2 | Itens recebidos: 501 | Tempo:*' }
+        Should -Invoke Get-PnPListItem -Times 3 -Exactly
+        Should -Invoke Get-PnPFileVersion -Times 1 -Exactly -ParameterFilter { $Url -eq '/docs/a.docx' }
+    }
+    It 'recusa cursor repetido em vez de entrar em laco infinito' {
+        Mock Get-PnPListItem { 1..500 | ForEach-Object { @{ID=1;FSObjType=1;FileRef='/docs/pasta'} } }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Status | Should -Be 'Partial'
+        $r.Error | Should -Match 'SPVC-PAGING'
+        Should -Invoke Get-PnPListItem -Times 1 -Exactly
+        Should -Invoke Remove-PnPFileVersion -Times 0
+    }
+    It 'pagina cheia seguida de vazia encerra sem repetir os primeiros itens' {
+        Mock Get-PnPListItem {
+            param($Query)
+            if (([xml]$Query).View.Query.Where.Gt.Value.InnerText -eq '0') {
+                1..500 | ForEach-Object { @{ID=$_;FSObjType=1;FileRef="/docs/pasta$_"} }
+            }
+        }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Success | Should -BeTrue
+        $r.FilesProcessed | Should -Be 0
+        Should -Invoke Get-PnPListItem -Times 2 -Exactly
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter { ([xml]$Query).View.Query.Where.Gt.Value.InnerText -eq '500' }
+    }
+    It 'biblioteca vazia conclui com contador zero sem consultas repetidas' {
+        Mock Write-Host {}
+        Mock Get-PnPListItem { @() }
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -PassThru
+        $r.Success | Should -BeTrue
+        Should -Invoke Write-Host -Times 1 -ParameterFilter { $Object -like '*Leitura concluida: 0 pagina(s), 0 item(ns), 0 arquivo(s)*' }
+        Should -Invoke Get-PnPListItem -Times 1 -Exactly
+    }
+    It 'mostra progresso tambem na amostra sem reativar paginacao automatica' {
+        Mock Write-Host {}
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
+        $r.FilesProcessed | Should -Be 1
+        Should -Invoke Write-Host -Times 1 -ParameterFilter { $Object -like '*Paginas recebidas: 1 | Itens recebidos: 1 | Tempo:*' }
+        Should -Invoke Get-PnPListItem -Times 1 -ParameterFilter { -not $PageSize -and ([xml]$Query).View.RowLimit.InnerText -eq '10' }
+    }
     It 'limita a amostra a dez no total de varias bibliotecas e limita a consulta no servidor' {
         Mock Get-PnPList { 'a','b','c' | ForEach-Object { [pscustomobject]@{Id=$_;Title=$_;BaseTemplate=101;Hidden=$false;IsCatalog=$false} } }
-        Mock Get-PnPListItem { param($List) 1..6 | ForEach-Object { @{FSObjType=0;FileRef="/docs/$List-$_.docx"} } }
+        Mock Get-PnPListItem { param($List) 1..6 | ForEach-Object { @{ID=$_;FSObjType=0;FileRef="/docs/$List-$_.docx"} } }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
         $r.Success | Should -BeTrue
         $r.SimulationFileLimit | Should -Be 10
@@ -83,9 +163,9 @@ Describe 'cleanup-versions.ps1' {
         $cfg.FolderScopes = @{'https://contoso.sharepoint.com/sites/test'='/sites/test/docs/piloto'}
         $cfg | ConvertTo-Json -Depth 8 | Set-Content $configPath
         Mock Get-PnPListItem {
-            @{FSObjType=0;FileRef='/sites/test/docs/fora.docx'}
-            @{FSObjType=1;FileRef='/sites/test/docs/piloto/pasta'}
-            1..15 | ForEach-Object { @{FSObjType=0;FileRef="/sites/test/docs/piloto/$_.docx";_ComplianceTag='Protected'} }
+            @{ID=1;FSObjType=0;FileRef='/sites/test/docs/fora.docx'}
+            @{ID=2;FSObjType=1;FileRef='/sites/test/docs/piloto/pasta'}
+            1..15 | ForEach-Object { @{ID=($_+2);FSObjType=0;FileRef="/sites/test/docs/piloto/$_.docx";_ComplianceTag='Protected'} }
         }
         $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -SimulationFileLimit 10 -PassThru
         $r.FilesInspected | Should -Be 10
@@ -747,7 +827,7 @@ exit $LASTEXITCODE
         $cfg = Get-Content $configPath -Raw | ConvertFrom-Json -AsHashtable
         $cfg.Sampling = @{Enabled=$true;SamplesPerLibrary=1}
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
-        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0';File_x0020_Size=1MB} }
+        Mock Get-PnPListItem { @{FSObjType=0;FileRef='/docs/a.docx';Modified=[datetime]'2026-09-01';UniqueId='a';_UIVersionString='5.0';File_x0020_Size=[pscustomobject]@{LookupValue='1048576'}} }
         Mock Get-PnPFileVersion { @() }
         $null = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -Apply -PassThru
         Mock Get-PnPFileVersion { 1..4 | ForEach-Object { [pscustomobject]@{Id=$_;Created=[datetime]'2026-01-01';Size=10} } }

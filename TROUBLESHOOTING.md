@@ -179,3 +179,11 @@ O instalador exige PnP.PowerShell 3.4.1 ou superior da serie 3.x. Se houver some
 O bootstrap ja prepara PowerShell 7.4.6+ quando nao encontra uma instalacao compativel, usando WinGet ou MSI oficial com assinatura validada. O modulo 3.4.1 declara PowerShell 7.4.0 como minimo; esta aplicacao mantem o piso 7.4.6. Uma dependencia que ainda nao carregue impede a continuacao.
 
 A importacao usa somente os caminhos locais de modulos do PowerShell e de Program Files. A alteracao de PSModulePath e temporaria, com restauracao mesmo em falha. O worker LOCAL SERVICE registra a versao do PowerShell, o manifesto e a saida detalhada de Import-Module no diagnostico preservado. Timeout na etapa module nao comprova incompatibilidade: antivírus, AppLocker, acesso a DLLs ou outras condicoes do host ainda podem exigir intervencao administrativa. O instalador nao desativa essas protecoes.
+
+## Contagem durante a leitura da biblioteca
+
+Na etapa de leitura, as linhas `[SPVC-LIST]` mostram biblioteca, páginas e itens recebidos e tempo decorrido. Cada página de até 500 itens é processada antes de solicitar a próxima. A contagem fica registrada no log `logs/cleanup-*.log`, inclusive no wizard. Itens incluem pastas; o resumo final informa os arquivos no escopo. O total só é conhecido ao terminar, por isso não há percentual estimado. Durante uma requisição aparece `Aguardando pagina N`.
+
+O retry repete somente a página atual, sem recontar as páginas já processadas. O tempo inclui processamento e esperas dessa biblioteca. A ausência de novas páginas não comprova travamento: a etapa também pode estar analisando versões dos arquivos recebidos. A amostra continua limitada a até 10 arquivos por site quando essa opção é escolhida.
+
+A leitura não acumula mais a biblioteca inteira em um array de objetos SharePoint. A análise continua sequencial, com menos passagens sobre o histórico de versões e sem reordenar versões recentes para calcular a próxima verificação. A amostragem guarda apenas metadados e seleciona os primeiros K resultados sem ordenar toda a classificação. Inventário, checkpoints e relatórios ainda crescem conforme os arquivos analisados; não há um teto global de RAM. A gravação do progresso por arquivo foi preservada para manter a retomada em caso de interrupção.

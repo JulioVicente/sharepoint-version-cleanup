@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.12',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.13',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -642,7 +642,7 @@ function Initialize-CleanupWizardDefaults {
             }
         } catch { Write-Warning "Sugestoes de '$source' indisponiveis; preencha os campos normalmente. $($_.Exception.Message)" }
     }
-    if ($script:WizardDefaults.Count) { Write-Host 'Ultimos valores carregados como sugestoes. Enter aceita; digite outro valor para alterar. As aprovacoes do piloto e da producao serao solicitadas novamente.' }
+    if ($script:WizardDefaults.Count) { Write-Host 'Ultimos valores carregados como sugestoes. Enter aceita; digite outro valor para alterar. O teste opcional sera solicitado novamente; o assistente agenda somente simulacao.' }
 }
 
 function Test-CleanupWizardKey {
@@ -885,20 +885,18 @@ function Invoke-SetupValidation {
     param([string]$ConfigPath)
     $config = Read-CleanupConfiguration $ConfigPath
     $installedCleanup = Join-Path (Split-Path (Split-Path $ConfigPath -Parent) -Parent) 'scripts/cleanup-versions.ps1'
-    $approved = [Collections.Generic.List[string]]::new()
-    Write-Step '3 de 5 - Conexao e simulacao'
+    Write-Step '3 de 5 - Teste opcional de ate 10 arquivos por site'
     foreach ($site in $config.Sites) {
         $cleanupArguments = @{ ConfigPath = $ConfigPath; SiteUrl = $site; PassThru = $true }
         if ($config.FolderScopes[$site]) { $cleanupArguments.FolderServerRelativeUrl = $config.FolderScopes[$site] }
         Write-Host "Site: $site | Pasta: $($config.FolderScopes[$site]) | Historico mantido: $($config.VersionsToKeep)"
-        if (-not (Read-YesNo 'Executar a simulacao agora?' -Default $true)) {
+        if (-not (Read-YesNo 'Testar ate 10 arquivos agora? N pula o teste' -Default $true)) {
             Write-Host 'Simulacao pulada. A instalacao continuara com este escopo agendado em simulacao.'
             continue
         }
-        if (Read-YesNo 'Limitar a simulacao a ate 10 arquivos neste site? N analisa o escopo completo' -Default $true) {
-            $cleanupArguments.SimulationFileLimit = 10
-            Write-Host 'Amostra de ate 10 arquivos no total deste site. O resultado representa somente a amostra; o agendamento continuara em simulacao.'
-        }
+        $cleanupArguments.SimulationFileLimit = 10
+        Write-Host 'Amostra de ate 10 arquivos no total deste site. O agendamento continuara em simulacao.'
+        $report = $null
         while ($true) {
             try {
                 $report = Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($installedCleanup, $cleanupArguments) -Action {
@@ -917,37 +915,23 @@ function Invoke-SetupValidation {
                 } else {
                     Write-Host "Confira o erro original acima e a configuracao em: $ConfigPath"
                 }
-                if (-not (Read-YesNo 'Apos corrigir, deseja tentar novamente?')) { throw }
+                if (-not (Read-YesNo 'Tentar o teste novamente? N pula e continua a instalacao')) {
+                    Write-Host 'Teste nao concluido. Instalacao continuara com agendamento em simulacao; confira o diagnostico acima.'
+                    $report = $null
+                    break
+                }
             }
         }
+        if ($null -eq $report) { continue }
         if ($report.PSObject.Properties['Status'] -and $report.Status -eq 'Partial') {
             Write-Host 'Instalacao continuara com agendamento em simulacao. Pendencias e motivos estao no relatorio; producao exige validacao e aprovacao posteriores.' -ForegroundColor Yellow
             continue
         }
-        if ($cleanupArguments.ContainsKey('SimulationFileLimit')) {
-            Write-Host 'Amostra concluida. A instalacao continuara com agendamento em simulacao para o escopo configurado.'
-            continue
-        }
-        Write-Step '4 de 5 - Aprovar o piloto'
-        if ($report.Success -and $report.VersionsEligible -gt 0 -and $report.FilesSkipped -eq 0 -and
-            (Read-YesNo 'Aprova excluir as versoes antigas neste escopo para validar o piloto? A exclusao e permanente')) {
-            $cleanupArguments.Apply = $true
-            $applied = Invoke-CleanupIsolated -ModulePath $script:PnPModulePath -ArgumentList @($installedCleanup, $cleanupArguments) -Action {
-                param($ScriptPath, $Parameters)
-                & $ScriptPath @Parameters
-            }
-            Show-CleanupSummary $applied
-            if ((Test-CleanupPilotResult $applied) -and
-                (Read-YesNo 'Piloto aprovado. Ativar execucoes incrementais agendadas neste escopo?')) {
-                $approved.Add($site)
-            } else {
-                Write-Host 'Este escopo sera agendado em simulacao; a producao nao foi aprovada.'
-            }
-        } else {
-            Write-Host 'Este escopo sera agendado em simulacao. Sem exclusoes elegiveis, crie historico no piloto antes de promover.'
-        }
+        Write-Host 'Amostra concluida. A instalacao continuara com agendamento em simulacao para o escopo configurado.'
     }
-    return $approved.ToArray()
+    Write-Step '4 de 5 - Agendamento em simulacao'
+    Write-Host 'O teste do assistente nao ativa exclusoes. A promocao para producao e feita separadamente com piloto aplicado e Enable-Production.ps1.'
+    return @()
 }
 
 function Show-CleanupSummary {
@@ -1157,7 +1141,7 @@ try {
     $stage = 'preparar e testar LOCAL SERVICE'
     Initialize-CleanupServiceIdentity -Configuration $configuration -Destination $InstallPath
     Test-CleanupServiceExecution -Configuration $configuration -Destination $InstallPath -ModulePath $script:PnPModulePath
-    $stage = 'validar simulacao e piloto'
+    $stage = 'testar amostra opcional'
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
     $stage = 'registrar agendamentos'
     Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
