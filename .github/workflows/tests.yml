@@ -37,6 +37,11 @@ jobs:
           Install-PSResource PnP.PowerShell -Version 3.4.1 -Scope AllUsers -TrustRepository -Quiet
           $manifest = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.4.1/PnP.PowerShell.psd1'
           ./tests/Test-ServiceContextIntegration.ps1 -ModulePath $manifest
+      - name: Verify configuration reload and restart with real Windows tasks
+        shell: pwsh
+        run: |
+          $manifest = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/3.4.1/PnP.PowerShell.psd1'
+          ./tests/Test-ConfigurationReloadIntegration.ps1 -ModulePath $manifest
       - name: Verify uninstall archive and Windows ACLs
         shell: pwsh
         run: ./tests/Test-UninstallIntegration.ps1

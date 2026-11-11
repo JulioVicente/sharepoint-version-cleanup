@@ -58,6 +58,14 @@ Describe 'cleanup-versions.ps1' {
         }
     }
 
+    It 'tarefa usa copia ativa validada mesmo quando JSON editavel esta invalido' {
+        $active = Join-Path $caseRoot 'active-config.json'
+        Copy-Item $configPath $active
+        '{invalid' | Set-Content $configPath
+        $r = & $cleanupScript -ConfigPath $configPath -SiteUrl 'https://contoso.sharepoint.com/sites/test' -UseActiveConfiguration -PassThru
+        $r.Success | Should -BeTrue
+        $r.VersionsToKeep | Should -Be 2
+    }
     It 'processa a primeira pagina antes de buscar a segunda e mostra contagem acumulada' {
         Mock Write-Host {}
         Mock Get-PnPListItem {

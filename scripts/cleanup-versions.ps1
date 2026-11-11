@@ -4,6 +4,7 @@ param(
     [Parameter(Mandatory = $true, ParameterSetName = 'Config')][string]$ConfigPath,
     [Parameter(Mandatory = $true)][string]$SiteUrl,
     [switch]$Apply,
+    [Parameter(ParameterSetName = 'Config')][switch]$UseActiveConfiguration,
     [Parameter(Mandatory = $true, ParameterSetName = 'Direct')]
     [Parameter(ParameterSetName = 'Config')][Alias('Directory')][string]$FolderServerRelativeUrl,
     [Parameter(Mandatory = $true, ParameterSetName = 'Direct')][string]$Tenant,
@@ -21,6 +22,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($Apply -and $SimulationFileLimit -gt 0) { throw 'SimulationFileLimit permite somente simulacao; nao pode ser combinado com Apply.' }
+if ($UseActiveConfiguration) { $ConfigPath = Join-Path (Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent) 'active-config.json' }
 $startedAt = Get-Date
 . (Join-Path $PSScriptRoot 'Configuration.ps1')
 . (Join-Path $PSScriptRoot 'Resilience.ps1')

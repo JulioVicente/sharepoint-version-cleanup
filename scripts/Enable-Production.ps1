@@ -11,7 +11,22 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'Configuration.ps1')
-$config = Read-CleanupConfiguration $ConfigPath
+$base = Split-Path (Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent) -Parent
+$reloadLock = $null
+try {
+if (-not $WhatIfPreference) {
+    try { $reloadLock = [IO.File]::Open((Join-Path $base '.install.lock'),'OpenOrCreate','ReadWrite','None') }
+    catch { throw '[SPVC-CONFIG-RELOAD] Recarga ou instalacao em andamento. Aguarde antes de promover.' }
+}
+foreach ($journal in '.reload-recovery.json','.install-recovery.json') {
+    if (Test-Path -LiteralPath (Join-Path $base $journal)) { throw '[SPVC-RECOVERY] Recuperacao pendente. Aguarde antes de promover producao.' }
+}
+$sourceText = [IO.File]::ReadAllText($ConfigPath)
+$activePath = Join-Path $base 'config/active-config.json'
+if (-not (Test-Path -LiteralPath $activePath) -or $sourceText -cne [IO.File]::ReadAllText($activePath)) {
+    throw '[SPVC-CONFIG-RELOAD] JSON possui alteracoes ainda nao recarregadas. Aguarde a recarga com sucesso antes de promover.'
+}
+$config = Read-CleanupConfiguration -Values ($sourceText | ConvertFrom-Json -AsHashtable)
 $PilotSiteUrl = ConvertTo-SiteUrl $PilotSiteUrl
 if ($PilotSiteUrl -notin $config.Sites) { throw 'Site piloto nao cadastrado.' }
 if (-not $PilotFolderServerRelativeUrl -and $config.FolderScopes[$PilotSiteUrl]) { $PilotFolderServerRelativeUrl = $config.FolderScopes[$PilotSiteUrl] }
@@ -39,7 +54,7 @@ $updates = foreach ($name in ($TaskName | Select-Object -Unique)) {
     $action = $task.Actions[0]
     $base = Split-Path (Split-Path ([IO.Path]::GetFullPath($ConfigPath)) -Parent) -Parent
     $cleanup = Join-Path $base 'scripts\cleanup-versions.ps1'
-    $expected = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanup`" -ConfigPath `"$([IO.Path]::GetFullPath($ConfigPath))`" -SiteUrl `"$PilotSiteUrl`""
+    $expected = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanup`" -ConfigPath `"$([IO.Path]::GetFullPath($ConfigPath))`" -UseActiveConfiguration -SiteUrl `"$PilotSiteUrl`""
     if ($PilotFolderServerRelativeUrl) { $expected += " -FolderServerRelativeUrl `"$($PilotFolderServerRelativeUrl.TrimEnd('/'))`"" }
     if ([IO.Path]::GetFileName($action.Execute) -ne 'pwsh.exe' -or
         ($action.Arguments -ne $expected -and $action.Arguments -ne "$expected -Apply")) {
@@ -47,6 +62,7 @@ $updates = foreach ($name in ($TaskName | Select-Object -Unique)) {
     }
     @{ Task = $task; Execute = $action.Execute; Arguments = "$expected -Apply" }
 }
+if ($sourceText -cne [IO.File]::ReadAllText($ConfigPath) -or $sourceText -cne [IO.File]::ReadAllText($activePath)) { throw 'JSON mudou durante a validacao. Repita apos a recarga.' }
 $count = 0
 foreach ($update in $updates) {
     if ($PSCmdlet.ShouldProcess($update.Task.TaskName, 'Habilitar exclusao no escopo validado')) {
@@ -56,3 +72,5 @@ foreach ($update in $updates) {
     }
 }
 Write-Host "$count tarefa(s) promovida(s)."
+
+} finally { if ($reloadLock) { $reloadLock.Dispose() } }

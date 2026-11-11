@@ -6,7 +6,7 @@ BeforeAll {
     function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel) }
     function New-ScheduledTaskAction { param($Execute,$Argument) }
     function New-ScheduledTaskTrigger { param([switch]$Daily,$At,[switch]$Weekly,$DaysOfWeek) }
-    function New-ScheduledTaskSettingsSet { param([switch]$StartWhenAvailable,$MultipleInstances,$ExecutionTimeLimit,$RestartCount,$RestartInterval,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) }
+    function New-ScheduledTaskSettingsSet { param([switch]$Disable,[switch]$StartWhenAvailable,$MultipleInstances,$ExecutionTimeLimit,$RestartCount,$RestartInterval,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries) }
     function Register-ScheduledTask { param($TaskName,$TaskPath,$Action,$Trigger,$Settings,$Description,$Principal,[switch]$Force,$Xml,$User,$Password) }
     function Get-ScheduledTask { param($TaskName,$TaskPath) }
     function Get-ScheduledTaskInfo { param($TaskName,$TaskPath) }

@@ -10,7 +10,7 @@ grava a configuracao local e cria tarefas semanais no Agendador do Windows.
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallPath = "$env:ProgramData\SharePointVersionCleanup",
-    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.13',
+    [string]$RepositoryRawUrl = 'https://raw.githubusercontent.com/JulioVicente/sharepoint-version-cleanup/v1.4.14',
     [switch]$SkipEmailTest,
     [switch]$SkipAppRegistration,
     [string]$AdminClientId
@@ -27,7 +27,11 @@ $script:WizardDefaults = @{}
 $script:WizardDefaultsPath = $null
 $script:PnPModulePath = $null
 $script:ConfigurationScript = Join-Path $PSScriptRoot 'scripts/Configuration.ps1'
+$schedulingHelper = Join-Path $PSScriptRoot 'scripts/ScheduledTasks.ps1'
+if (Test-Path -LiteralPath $schedulingHelper) { . $schedulingHelper }
 $script:RequiredFiles = @(
+    'scripts/ScheduledTasks.ps1',
+    'scripts/Reload-Configuration.ps1',
     'scripts/cleanup-versions.ps1',
     'scripts/Send-EmailReport.ps1',
     'scripts/Configuration.ps1',
@@ -956,57 +960,6 @@ function Show-CleanupSummary {
     }
     foreach ($warning in $Report.Warnings) { Write-Warning $warning }
 }
-function Install-ScheduledTasks {
-    [CmdletBinding(SupportsShouldProcess)]
-    param(
-        [System.Collections.IDictionary]$Configuration,
-        [string]$Destination,
-        [string[]]$ProductionSites = @()
-    )
-
-    Write-Step '5 de 5 - Criando tarefas agendadas'
-    $days = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
-    $pwsh = Join-Path $PSHOME 'pwsh.exe'
-    $cleanupScript = Join-Path $Destination 'scripts\cleanup-versions.ps1'
-    $configPath = Join-Path $Destination 'config\config.json'
-    Write-Host 'As tarefas usarao LOCAL SERVICE e o certificado do aplicativo, sem senha pessoal e sem exigir sessao aberta.'
-    $serviceName = ([Security.Principal.SecurityIdentifier]::new('S-1-5-19')).Translate([Security.Principal.NTAccount]).Value
-    $taskPrincipal = New-ScheduledTaskPrincipal -UserId $serviceName -LogonType ServiceAccount -RunLevel Limited
-        for ($index = 0; $index -lt $Configuration.Sites.Count; $index++) {
-            $site = $Configuration.Sites[$index]
-            $day = $days[$index % $days.Count]
-            $taskName = "$script:TaskPrefix - {0:D2}" -f ($index + 1)
-            # Instalacoes novas iniciam deliberadamente em simulacao. O operador
-            # deve validar os relatorios antes de acrescentar -Apply.
-            $arguments = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$cleanupScript`" -ConfigPath `"$configPath`" -SiteUrl `"$site`""
-            if ($Configuration.FolderScopes[$site]) { $arguments += " -FolderServerRelativeUrl `"$($Configuration.FolderScopes[$site])`"" }
-            if ($site -in $ProductionSites) { $arguments += ' -Apply' }
-            $action = New-ScheduledTaskAction -Execute $pwsh -Argument $arguments
-            $trigger = if ($Configuration.Schedule.Frequency -eq 'diaria') {
-                New-ScheduledTaskTrigger -Daily -At $Configuration.Schedule.Time
-            } else { New-ScheduledTaskTrigger -Weekly -DaysOfWeek $day -At $Configuration.Schedule.Time }
-            $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
-                -ExecutionTimeLimit (New-TimeSpan -Hours 12) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 15)
-
-            if ($PSCmdlet.ShouldProcess($taskName, "Agendar $site as $($Configuration.Schedule.Time)")) {
-                $existingTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-                if ($existingTask) {
-                    if ($existingTask.State -eq 'Running') { throw "A tarefa $taskName esta em execucao. Aguarde antes de atualizar." }
-                    if (@($existingTask.Actions).Count -ne 1 -or
-                        $existingTask.Actions[0].Arguments -notlike "*`"$configPath`"*") {
-                        throw "A tarefa $taskName pertence a outra configuracao. Escolha nomes/destino sem conflito."
-                    }
-                    if (-not $script:TaskBackups.ContainsKey($taskName)) { $script:TaskBackups[$taskName] = Export-ScheduledTask -TaskName $taskName -TaskPath '\' }
-                } else {
-                    $script:NewTasks.Add($taskName)
-                }
-                Register-ScheduledTask -TaskName $taskName -TaskPath '\' -Action $action -Trigger $trigger `
-                    -Settings $settings -Description "Limpeza de versoes: $site" `
-                    -Principal $taskPrincipal -Force | Out-Null
-            }
-        }
-}
-
 function Suspend-CleanupInstallationTasks {
     param([string]$Destination)
     $configPath = Join-Path $Destination 'config\config.json'
@@ -1084,7 +1037,7 @@ if ($InstallPath -eq [IO.Path]::GetPathRoot($InstallPath).TrimEnd('\') -or
 Assert-CleanupInstallPath $InstallPath
 # Back up only files owned by the installer. Never delete the user's whole folder.
 $rollbackRoot = Join-Path ([IO.Path]::GetTempPath()) ('spvc-install-' + [guid]::NewGuid().ToString('N'))
-$managedFiles = @($script:RequiredFiles) + @('config/config.json', 'release-manifest.json')
+$managedFiles = @($script:RequiredFiles) + @('config/config.json', 'config/active-config.json', 'release-manifest.json')
 $backups = @{}
 $written = [Collections.Generic.List[string]]::new()
 $removeBackups = $false
@@ -1101,6 +1054,7 @@ try {
     $null = New-Item -ItemType Directory -Path $InstallPath -Force
     try { $installationLock = [IO.File]::Open((Join-Path $InstallPath '.install.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
     catch { throw "[SPVC-INSTALL-BUSY] Nao foi possivel bloquear '$InstallPath' para instalacao. Verifique outra instalacao em curso e permissoes. $($_.Exception.Message)" }
+    if (Test-Path -LiteralPath (Join-Path $InstallPath '.reload-recovery.json')) { throw '[SPVC-RECOVERY] Recarga interrompida. Aguarde ou execute Reload-Configuration.ps1 para recuperar antes de reinstalar.' }
     if (Test-Path -LiteralPath $journalPath) { throw "[SPVC-RECOVERY] Uma instalacao anterior foi interrompida. Revise '$journalPath', que indica os backups para recuperar arquivos e tarefas. Preserve esses backups; remova o marcador somente depois de concluir a recuperacao." }
     Ensure-PnPModule
     New-Item -ItemType Directory -Path $rollbackRoot -Force | Out-Null
@@ -1125,6 +1079,8 @@ try {
     $script:ConfigurationScript = Join-Path $InstallPath 'scripts/Configuration.ps1'
     . $script:ConfigurationScript
     . (Join-Path $InstallPath 'scripts/TaskIdentity.ps1')
+    . (Join-Path $InstallPath 'scripts/ScheduledTasks.ps1')
+    . (Join-Path $InstallPath 'scripts/Reload-Configuration.ps1') -WhatIf
     $stage = 'preencher e validar configuracao'
     $configuration = New-Configuration -Destination $InstallPath
     $configuration.PnPModulePath = $script:PnPModulePath
@@ -1144,7 +1100,9 @@ try {
     $stage = 'testar amostra opcional'
     $productionSites = @(Invoke-SetupValidation -ConfigPath $configPath)
     $stage = 'registrar agendamentos'
+    Copy-Item -LiteralPath $configPath -Destination (Join-Path $InstallPath 'config/active-config.json') -Force
     Install-ScheduledTasks -Configuration $configuration -Destination $InstallPath -ProductionSites $productionSites
+    Register-CleanupReloadTask -ConfigPath $configPath
     foreach ($oldName in $script:TaskBackups.Keys) {
         $index = 0
         if ([int]::TryParse(($oldName -split ' - ')[-1], [ref]$index) -and $index -gt $configuration.Sites.Count) {

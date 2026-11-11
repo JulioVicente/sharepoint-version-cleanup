@@ -19,11 +19,17 @@ Describe 'Production scope' {
         $cfg.Paths.Logs = Join-Path $installation 'logs'
         $cfg.Paths.State = Join-Path $installation 'state'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Copy-Item $configPath (Join-Path $installation 'config/active-config.json') -Force
         @{SiteUrl='https://contoso.sharepoint.com';Success=$true;Apply=$true;VersionsToKeep=10;PolicyKey='10|30';FilesProcessed=1;FilesSkipped=0;VersionsDeleted=2;FolderServerRelativeUrl='/teste03';FinishedAt=(Get-Date).AddMinutes(-1)} |
             ConvertTo-Json | Set-Content (Join-Path $cfg.Paths.Logs 'report-pilot.json')
         Mock Get-ScheduledTask { [pscustomobject]@{TaskName='SharePoint Version Cleanup - 01'; Actions=@([pscustomobject]@{Execute='C:\Program Files\PowerShell\7\pwsh.exe';Arguments='wrong-scope'})} }
         Mock New-ScheduledTaskAction { [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
         Mock Set-ScheduledTask {}
+    }
+    It 'recusa promover quando JSON editado ainda nao foi recarregado' {
+        Add-Content $configPath ' '
+        { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*ainda nao recarregadas*'
+        Should -Invoke Set-ScheduledTask -Times 0
     }
     It 'nao promove tarefa de outro escopo' {
         { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*escopo*'
@@ -32,11 +38,12 @@ Describe 'Production scope' {
     It 'recusa piloto cuja idade minima difere da politica atual' {
         $cfg.Safety.MinimumVersionAgeDays = 0
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $configPath
+        Copy-Item $configPath (Join-Path $installation 'config/active-config.json') -Force
         { & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO' } | Should -Throw '*Nenhum piloto*'
         Should -Invoke Set-ScheduledTask -Times 0
     }
     It 'promove somente a tarefa explicitamente indicada e validada' {
-        $expectedArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $installation 'scripts\cleanup-versions.ps1')`" -ConfigPath `"$configPath`" -SiteUrl `"https://contoso.sharepoint.com`" -FolderServerRelativeUrl `"/teste03`""
+        $expectedArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $installation 'scripts\cleanup-versions.ps1')`" -ConfigPath `"$configPath`" -UseActiveConfiguration -SiteUrl `"https://contoso.sharepoint.com`" -FolderServerRelativeUrl `"/teste03`""
         Mock Get-ScheduledTask { [pscustomobject]@{TaskName='SharePoint Version Cleanup - 01';Actions=@([pscustomobject]@{Execute='C:\Program Files\PowerShell\7\pwsh.exe';Arguments=$expectedArgs})} }
         & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -PilotFolderServerRelativeUrl '/teste03' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO'
         Should -Invoke Set-ScheduledTask -Times 1 -ParameterFilter { $TaskName -eq 'SharePoint Version Cleanup - 01' -and $Action.Arguments.EndsWith(' -Apply') }
@@ -46,7 +53,7 @@ Describe 'Production scope' {
         $report = Get-Content $reportPath -Raw | ConvertFrom-Json -AsHashtable
         $report.Success = $false; $report.Status = 'Deferred'; $report.LimitReached = $true; $report.FilesProcessed = 0
         $report | ConvertTo-Json | Set-Content $reportPath
-        $expectedArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $installation 'scripts\cleanup-versions.ps1')`" -ConfigPath `"$configPath`" -SiteUrl `"https://contoso.sharepoint.com`" -FolderServerRelativeUrl `"/teste03`""
+        $expectedArgs = "-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$(Join-Path $installation 'scripts\cleanup-versions.ps1')`" -ConfigPath `"$configPath`" -UseActiveConfiguration -SiteUrl `"https://contoso.sharepoint.com`" -FolderServerRelativeUrl `"/teste03`""
         Mock Get-ScheduledTask { [pscustomobject]@{TaskName='SharePoint Version Cleanup - 01';Actions=@([pscustomobject]@{Execute='pwsh.exe';Arguments=$expectedArgs})} }
         & $productionScript -ConfigPath $configPath -PilotSiteUrl 'https://contoso.sharepoint.com' -TaskName 'SharePoint Version Cleanup - 01' -Confirmation 'ATIVAR PRODUCAO'
         Should -Invoke Set-ScheduledTask -Times 1

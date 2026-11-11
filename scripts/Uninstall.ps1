@@ -63,12 +63,12 @@ function Get-UninstallPlan {
     $root = Assert-UninstallPath $InstallPath
     # Fixed allowlist: never trust paths supplied by an installed manifest or JSON.
     $owned = @(
-        'scripts/cleanup-versions.ps1','scripts/Send-EmailReport.ps1','scripts/Configuration.ps1',
+        'scripts/ScheduledTasks.ps1','scripts/Reload-Configuration.ps1','scripts/cleanup-versions.ps1','scripts/Send-EmailReport.ps1','scripts/Configuration.ps1',
         'scripts/Diagnostics.ps1','scripts/Progress.ps1','scripts/Formatting.ps1','scripts/TaskIdentity.ps1',
         'scripts/Test-ServiceContext.ps1','scripts/Resilience.ps1','scripts/Sampling.ps1',
         'scripts/Get-DailyAudit.ps1','scripts/Invoke-Pilot.ps1','scripts/Enable-Production.ps1',
         'scripts/Validate-Prerequisites.ps1','scripts/Uninstall.ps1',
-        'config/config.example.json','config/config.json','config/wizard-defaults.json',
+        'config/active-config.json','config/config.example.json','config/config.json','config/wizard-defaults.json',
         'config/wizard-defaults.json.tmp','templates/email-template.html',
         'CONFIGURATION.md','QUICK_START.md','TROUBLESHOOTING.md','INSTALL_DETAILS.md','release-manifest.json','state'
     )
@@ -106,6 +106,7 @@ function Get-UninstallPlan {
     if ($paths.Count -and -not $recognized) {
         throw '[SPVC-UNINSTALL-PATH] Pasta nao reconhecida como instalacao SharePoint Version Cleanup. Confira -InstallPath; nenhum arquivo foi movido.'
     }
+    if (Test-Path -LiteralPath (Join-Path $root '.reload-recovery.json')) { throw '[SPVC-RECOVERY] Ha uma recarga pendente; aguarde o monitor recuperar as tarefas antes de desinstalar.' }
     if (Test-Path -LiteralPath (Join-Path $root '.install-recovery.json')) {
         throw '[SPVC-RECOVERY] Ha uma recuperacao de instalacao pendente. Preserve e revise .install-recovery.json e os backups antes de limpar.'
     }
@@ -165,6 +166,9 @@ function Invoke-CleanupUninstall {
         Assert-UninstallTarget -Root $plan.Root -Path (Join-Path $plan.Root '.install.lock')
         try { $lock = [IO.File]::Open((Join-Path $plan.Root '.install.lock'), 'OpenOrCreate', 'ReadWrite', 'None') }
         catch { throw '[SPVC-UNINSTALL-BUSY] Outra instalacao/desinstalacao pode estar em curso ou o lock esta inacessivel.' }
+        $plan = Get-UninstallPlan $InstallPath
+        $record.PlannedTasks = @($plan.Tasks | ForEach-Object TaskName)
+        $record.PlannedPaths = @($plan.Paths | ForEach-Object Relative)
         # Refuse an active manual cleanup too; never force-stop a running operation.
         $state = Join-Path $plan.Root 'state'
         if (Test-Path -LiteralPath $state -PathType Container) {
