@@ -21,7 +21,7 @@ function Wait-Fixture {
         if (& $Condition) { return }
         Start-Sleep -Milliseconds 500
     }
-    $log = Join-Path $root 'config-reload.log'
+    $log = Join-Path $root 'logs/config-reload.log'
     if (Test-Path $log) { Get-Content $log -Tail 12 | Write-Host }
     throw "Timeout: $Message"
 }
@@ -70,7 +70,7 @@ Start-Sleep -Seconds 300
     $accepted=(Get-FileHash $active).Hash
     '{invalid' | Set-Content $source
     Start-ScheduledTask -TaskName $names[1] -TaskPath '\'
-    Wait-Fixture { (Test-Path (Join-Path $root 'config-reload.log')) -and (Get-Content (Join-Path $root 'config-reload.log') -Raw) -match 'JSON nao recarregado por erro' } 'diagnostico de JSON invalido'
+    Wait-Fixture { (Test-Path (Join-Path $root 'logs/config-reload.log')) -and (Get-Content (Join-Path $root 'logs/config-reload.log') -Raw) -match 'JSON nao recarregado por erro' } 'diagnostico de JSON invalido'
     Wait-Fixture { (Get-ScheduledTask -TaskName $names[1]).State -ne 'Running' } 'monitor rejeitar JSON'
     if ((Get-FileHash $active).Hash -ne $accepted) { throw 'JSON invalido substituiu a copia ativa.' }
     if ((Get-Content $marker -Raw | ConvertFrom-Json).ProcessId -ne $second.ProcessId -or (Get-ScheduledTask -TaskName $names[0]).State -ne 'Running') { throw 'JSON invalido interrompeu o worker.' }

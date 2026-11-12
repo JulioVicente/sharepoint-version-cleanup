@@ -52,15 +52,43 @@ Describe 'Recarga automatica do JSON' {
         Invoke-CleanupConfigurationReload $source
         Should -Invoke Stop-ScheduledTask -Times 0
         Should -Invoke Register-ScheduledTask -Times 0
-        Test-Path (Join-Path $root 'config-reload.log') | Should -BeFalse
+        Test-Path (Join-Path $root 'logs/config-reload.log') | Should -BeFalse
     }
     It 'JSON invalido registra erro e mantem configuracao ativa e execucao' {
         '{invalid' | Set-Content $source
         { Invoke-CleanupConfigurationReload $source } | Should -Throw '*JSON nao recarregado*'
         [IO.File]::ReadAllText($active) | Should -Be $before
-        (Get-Content (Join-Path $root 'config-reload.log') -Raw) | Should -Match 'JSON nao recarregado por erro.*validar JSON'
+        (Get-Content (Join-Path $root 'logs/config-reload.log') -Raw) | Should -Match 'JSON nao recarregado por erro.*validar JSON'
         Should -Invoke Stop-ScheduledTask -Times 0
         $store.Tasks[$name].State | Should -Be 'Running'
+    }
+    It 'JSON editavel invalido usa Paths.Logs da configuracao ativa' {
+        $cfg.Paths.Logs = Join-Path $root 'custom-logs'
+        $cfg | ConvertTo-Json -Depth 10 | Set-Content $active
+        '{invalid' | Set-Content $source
+        { Invoke-CleanupConfigurationReload $source } | Should -Throw '*JSON nao recarregado*'
+        Get-Content (Join-Path $cfg.Paths.Logs 'config-reload.log') -Raw | Should -Match 'JSON nao recarregado por erro'
+        Test-Path (Join-Path $root 'config-reload.log') | Should -BeFalse
+        Test-Path (Join-Path $root 'logs/config-reload.log') | Should -BeFalse
+    }
+    It 'configuracao ativa ilegivel usa logs da instalacao e preserva diagnostico' {
+        '{invalid' | Set-Content $active
+        Write-CleanupReloadLog $root 'erro original de recarga'
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'erro original de recarga.*Log alternativo:.*Destino de log ativo indisponivel'
+    }
+    It 'pasta configurada indisponivel usa logs da instalacao' {
+        $cfg.Paths.Logs = Join-Path $root 'blocked-logs'
+        'arquivo bloqueando a pasta' | Set-Content $cfg.Paths.Logs
+        $cfg | ConvertTo-Json -Depth 10 | Set-Content $active
+        Write-CleanupReloadLog $root 'erro original de recarga'
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'erro original de recarga.*Log alternativo:.*blocked-logs'
+    }
+    It 'mudanca de Paths.Logs registra inicio na pasta anterior e sucesso na nova' {
+        $cfg.Paths.Logs = Join-Path $root 'new-logs'
+        $cfg | ConvertTo-Json -Depth 10 | Set-Content $source
+        Invoke-CleanupConfigurationReload $source
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'JSON valido alterado'
+        Get-Content (Join-Path $cfg.Paths.Logs 'config-reload.log') -Raw | Should -Match 'JSON recarregado com sucesso'
     }
     It 'validacao semantica falha antes de parar tarefas' {
         $cfg.Schedule.Time='99:99'; $cfg | ConvertTo-Json -Depth 10 | Set-Content $source
@@ -84,7 +112,7 @@ Describe 'Recarga automatica do JSON' {
         Should -Invoke New-ScheduledTaskTrigger -Times 1 -ParameterFilter { $At -eq '21:00' }
         $store.Tasks[$name].Actions[0].Arguments | Should -Match '-UseActiveConfiguration.*-Apply'
         Test-Path (Join-Path $root '.reload-recovery.json') | Should -BeFalse
-        Get-Content (Join-Path $root 'config-reload.log') -Raw | Should -Match 'JSON recarregado com sucesso'
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'JSON recarregado com sucesso'
     }
     It 'mudanca de retencao nao herda aprovacao de exclusoes' {
         $cfg.VersionsToKeep=3; $cfg | ConvertTo-Json -Depth 10 | Set-Content $source
@@ -141,7 +169,7 @@ Describe 'Recarga automatica do JSON' {
         Invoke-CleanupConfigurationReload $source
         [IO.File]::ReadAllText($active) | Should -Be $before
         Test-Path (Join-Path $root '.reload-recovery.json') | Should -BeFalse
-        Get-Content (Join-Path $root 'config-reload.log') -Raw | Should -Match 'recarga anterior interrompida'
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'recarga anterior interrompida'
     }
     It 'falha na recuperacao preserva journal e loga recuperacao incompleta' {
         @{ActiveText=$before;TargetNames=@($name);Tasks=@(@{Name=$name;Xml='<original-task/>';WasRunning=$true})} |
@@ -149,7 +177,7 @@ Describe 'Recarga automatica do JSON' {
         Mock Register-ScheduledTask { throw 'restauracao negada' } -ParameterFilter { $Xml }
         { Invoke-CleanupConfigurationReload $source } | Should -Throw '*Recuperacao incompleta*'
         Test-Path (Join-Path $root '.reload-recovery.json') | Should -BeTrue
-        Get-Content (Join-Path $root 'config-reload.log') -Raw | Should -Match 'recuperar recarga anterior.*restauracao negada'
+        Get-Content (Join-Path $root 'logs/config-reload.log') -Raw | Should -Match 'recuperar recarga anterior.*restauracao negada'
     }
     It 'manifesto PnP incompativel e recusado antes da parada' {
         $modulePath = Join-Path $env:ProgramFiles 'PowerShell/Modules/PnP.PowerShell/4.0.0/PnP.PowerShell.psd1'

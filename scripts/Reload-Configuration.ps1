@@ -4,9 +4,35 @@ param([string]$ConfigPath = "$env:ProgramData\SharePointVersionCleanup\config\co
 
 function Write-CleanupReloadLog {
     param([string]$Root,[string]$Message)
+    $Root = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    $defaultDirectory = Join-Path $Root 'logs'
+    $directory = $defaultDirectory
+    $diagnostics = [Collections.Generic.List[string]]::new()
+    try {
+        # Never take the log destination from the editable, potentially invalid JSON.
+        $active = Read-CleanupConfiguration (Join-Path $Root 'config/active-config.json')
+        $candidate = [IO.Path]::GetFullPath($active.Paths.Logs).TrimEnd('\')
+        if (-not $candidate.StartsWith("$Root\",[StringComparison]::OrdinalIgnoreCase)) { throw 'Paths.Logs fora da instalacao.' }
+        foreach ($protected in 'scripts','config','certificates') {
+            $base = Join-Path $Root $protected
+            if ($candidate -eq $base -or $candidate.StartsWith("$base\",[StringComparison]::OrdinalIgnoreCase)) { throw 'Paths.Logs aponta para uma pasta protegida.' }
+        }
+        $directory = $candidate
+    } catch { $diagnostics.Add("Destino de log ativo indisponivel: $($_.Exception.Message)") }
     $line = '{0} [SPVC-CONFIG-RELOAD] {1}' -f ([DateTimeOffset]::Now.ToString('o')), $Message
-    [IO.File]::AppendAllText((Join-Path $Root 'config-reload.log'), $line + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-    Write-Host $line
+    foreach ($target in @($directory,$defaultDirectory | Select-Object -Unique)) {
+        try {
+            $path = Join-Path $target 'config-reload.log'
+            Assert-CleanupLocalPath $path
+            $null = [IO.Directory]::CreateDirectory($target)
+            $entry = $line
+            if ($diagnostics.Count) { $entry += ' Log alternativo: ' + ($diagnostics -join ' ') }
+            [IO.File]::AppendAllText($path, $entry + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+            Write-Host $entry
+            return
+        } catch { $diagnostics.Add("Falha em '${target}': $($_.Exception.Message)") }
+    }
+    throw "$line Nao foi possivel gravar o log: $($diagnostics -join ' ')"
 }
 function Set-CleanupActiveConfiguration {
     param([string]$Path,[string]$Text)

@@ -125,4 +125,4 @@ Os campos são validados assim que os dados necessários ficam disponíveis. Sit
 
 ## Alterar a configuracao depois de instalar
 
-Edite `C:\ProgramData\SharePointVersionCleanup\config\config.json` como Administrador. O monitor da v1.4.14 verifica o arquivo a cada minuto, sincroniza tarefas e reinicia as execucoes ativas com a configuracao completa. Se houver erro, o motivo aparece em `C:\ProgramData\SharePointVersionCleanup\config-reload.log` e a copia ativa anterior e preservada. Para habilitar esse recurso em uma instalacao antiga, execute uma vez o bootstrap atualizado.
+Edite `C:\ProgramData\SharePointVersionCleanup\config\config.json` como Administrador. O monitor da versão atual verifica o arquivo a cada minuto, sincroniza tarefas e reinicia as execucoes ativas com a configuracao completa. Se houver erro, o motivo aparece em `C:\ProgramData\SharePointVersionCleanup\logs\config-reload.log` e a copia ativa anterior e preservada. Para habilitar esse recurso em uma instalacao antiga, execute uma vez o bootstrap atualizado.

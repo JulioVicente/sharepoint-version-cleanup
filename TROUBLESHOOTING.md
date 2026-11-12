@@ -190,7 +190,7 @@ A leitura não acumula mais a biblioteca inteira em um array de objetos SharePoi
 
 ## JSON nao recarregado
 
-O monitor registra no arquivo `C:\ProgramData\SharePointVersionCleanup\config-reload.log` mensagens como `[SPVC-CONFIG-RELOAD] JSON nao recarregado por erro na etapa 'validar JSON': <erro original>. Configuracao ativa e tarefas anteriores mantidas.` O caminho muda se a instalacao usa outro destino. Corrija `config/config.json` e aguarde o proximo ciclo; nao edite `active-config.json`.
+O monitor registra no arquivo `C:\ProgramData\SharePointVersionCleanup\logs\config-reload.log` mensagens como `[SPVC-CONFIG-RELOAD] JSON nao recarregado por erro na etapa 'validar JSON': <erro original>. Configuracao ativa e tarefas anteriores mantidas.` O caminho acompanha `Paths.Logs` da configuracao ativa; se ela estiver ilegivel ou o destino indisponivel, o monitor tenta a pasta `logs` da instalacao e registra o motivo do caminho alternativo. Corrija `config/config.json` e aguarde o proximo ciclo; nao edite `active-config.json`.
 
 Se falhar depois de iniciar a atualizacao, o log identifica a etapa (parar tarefas, preparar certificado/pastas, atualizar tarefas ou reiniciar) e informa se a restauracao terminou. `Recuperacao incompleta` exige preservar `.reload-recovery.json`; o monitor tentara recuperar no proximo ciclo. Nao reinstale/desinstale nem promova producao enquanto essa recuperacao estiver pendente. JSON salvo parcialmente ou com sintaxe invalida nao substitui a configuracao ativa.
 
@@ -198,7 +198,7 @@ Para solicitar a verificacao imediatamente, como Administrador:
 
 ```powershell
 Start-ScheduledTask -TaskName 'SharePoint Version Cleanup - Config Reload'
-Get-Content 'C:\ProgramData\SharePointVersionCleanup\config-reload.log' -Tail 30
+Get-Content 'C:\ProgramData\SharePointVersionCleanup\logs\config-reload.log' -Tail 30
 ```
 
 A recarga automatica controla tarefas agendadas desta instalacao. Execucoes manuais em outra janela nao sao encerradas pelo monitor. O monitor valida formato e dependencias locais; mudancas de permissao ou acesso no Microsoft 365 ainda podem falhar na execucao e aparecer no log da limpeza.
